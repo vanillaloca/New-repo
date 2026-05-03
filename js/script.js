@@ -5,24 +5,25 @@ const PLATFORM = 'common-gen5';
 const CAPTAIN = 'Tim Kuhn';
 
 const BASE = 'https://proclubs.ea.com/api/fc';
+const PROXY = 'https://api.allorigins.win/raw?url=';
 
 const POS_MAP = {
-  0: { label: 'TW', name: 'Torwart', group: 'gk', color: '#f0c040' },
-  1: { label: 'LI', name: 'Libero', group: 'def', color: '#4a9eff' },
-  2: { label: 'RFV', name: 'Rechter Flügelverteidiger', group: 'def', color: '#4a9eff' },
-  3: { label: 'RV', name: 'Rechtsverteidiger', group: 'def', color: '#4a9eff' },
-  4: { label: 'IV', name: 'Innenverteidiger', group: 'def', color: '#4a9eff' },
-  5: { label: 'LV', name: 'Linksverteidiger', group: 'def', color: '#4a9eff' },
-  6: { label: 'LFV', name: 'Linker Flügelverteidiger', group: 'def', color: '#4a9eff' },
-  7: { label: 'DM', name: 'Defensives Mittelfeld', group: 'mid', color: '#a855f7' },
-  8: { label: 'RM', name: 'Rechtes Mittelfeld', group: 'mid', color: '#a855f7' },
-  9: { label: 'ZM', name: 'Zentrales Mittelfeld', group: 'mid', color: '#a855f7' },
-  10: { label: 'OM', name: 'Offensives Mittelfeld', group: 'mid', color: '#a855f7' },
-  11: { label: 'LM', name: 'Linkes Mittelfeld', group: 'mid', color: '#a855f7' },
-  12: { label: 'RA', name: 'Rechtsaußen', group: 'att', color: '#f0c040' },
-  13: { label: 'ST', name: 'Mittelstürmer', group: 'att', color: '#f0c040' },
-  14: { label: 'LA', name: 'Linksaußen', group: 'att', color: '#f0c040' },
-  25: { label: 'CF', name: 'Hängende Spitze', group: 'att', color: '#f0c040' },
+  0:  { label: 'TW',  name: 'Torwart',                    group: 'gk',  color: '#f0c040' },
+  1:  { label: 'LI',  name: 'Libero',                     group: 'def', color: '#4a9eff' },
+  2:  { label: 'RFV', name: 'Rechter Flügelverteidiger',  group: 'def', color: '#4a9eff' },
+  3:  { label: 'RV',  name: 'Rechtsverteidiger',           group: 'def', color: '#4a9eff' },
+  4:  { label: 'IV',  name: 'Innenverteidiger',            group: 'def', color: '#4a9eff' },
+  5:  { label: 'LV',  name: 'Linksverteidiger',            group: 'def', color: '#4a9eff' },
+  6:  { label: 'LFV', name: 'Linker Flügelverteidiger',   group: 'def', color: '#4a9eff' },
+  7:  { label: 'DM',  name: 'Defensives Mittelfeld',       group: 'mid', color: '#a855f7' },
+  8:  { label: 'RM',  name: 'Rechtes Mittelfeld',          group: 'mid', color: '#a855f7' },
+  9:  { label: 'ZM',  name: 'Zentrales Mittelfeld',        group: 'mid', color: '#a855f7' },
+  10: { label: 'OM',  name: 'Offensives Mittelfeld',       group: 'mid', color: '#a855f7' },
+  11: { label: 'LM',  name: 'Linkes Mittelfeld',           group: 'mid', color: '#a855f7' },
+  12: { label: 'RA',  name: 'Rechtsaußen',                 group: 'att', color: '#f0c040' },
+  13: { label: 'ST',  name: 'Mittelstürmer',               group: 'att', color: '#f0c040' },
+  14: { label: 'LA',  name: 'Linksaußen',                  group: 'att', color: '#f0c040' },
+  25: { label: 'CF',  name: 'Hängende Spitze',             group: 'att', color: '#f0c040' },
 };
 
 function posInfo(pos) {
@@ -30,36 +31,75 @@ function posInfo(pos) {
 }
 
 // ===========================
-// EA API FETCH
+// FETCH HELPERS
 // ===========================
-async function fetchEA(path) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Accept': 'application/json' },
-  });
+async function fetchJSON(url) {
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
+async function fetchEA(path) {
+  return fetchJSON(`${BASE}${path}`);
+}
+
+async function fetchViaProxy(path) {
+  const target = encodeURIComponent(`${BASE}${path}`);
+  return fetchJSON(`${PROXY}${target}`);
+}
+
+// Three-tier: local cached file → direct EA API → CORS proxy
+async function fetchWithFallback(localFile, eaPath) {
+  // Tier 1: local data/*.json (filled daily by GitHub Actions)
+  try {
+    const data = await fetchJSON(localFile);
+    const isEmpty = Array.isArray(data) ? data.length === 0 : Object.keys(data).length === 0;
+    if (!isEmpty) return data;
+  } catch (_) { /* fall through */ }
+
+  // Tier 2: direct EA API (browser requests bypass Cloudflare allowlist)
+  try {
+    return await fetchEA(eaPath);
+  } catch (_) { /* fall through */ }
+
+  // Tier 3: CORS proxy as last resort
+  return fetchViaProxy(eaPath);
+}
+
+// ===========================
+// LOAD EVERYTHING
+// ===========================
 async function loadClubData() {
   try {
     const [clubRes, membersRes, matchRes] = await Promise.allSettled([
-      fetchEA(`/clubs/overallStats?platform=${PLATFORM}&clubIds=${CLUB_ID}`),
-      fetchEA(`/clubs/members?platform=${PLATFORM}&clubId=${CLUB_ID}`),
-      fetchEA(`/clubs/matches?matchType=gameType9&platform=${PLATFORM}&clubIds=${CLUB_ID}`),
+      fetchWithFallback('data/club.json',    `/clubs/overallStats?platform=${PLATFORM}&clubIds=${CLUB_ID}`),
+      fetchWithFallback('data/members.json', `/clubs/members?platform=${PLATFORM}&clubId=${CLUB_ID}`),
+      fetchWithFallback('data/matches.json', `/clubs/matches?matchType=gameType9&platform=${PLATFORM}&clubIds=${CLUB_ID}`),
     ]);
 
-    if (clubRes.status === 'fulfilled') applyClubStats(clubRes.value);
-    else showApiNote('Club-Stats konnten nicht geladen werden.');
+    if (clubRes.status === 'fulfilled')    applyClubStats(clubRes.value);
+    else showApiNote('Club-Stats nicht verfügbar.');
 
     if (membersRes.status === 'fulfilled') buildSquad(membersRes.value);
     else showSquadError();
 
-    if (matchRes.status === 'fulfilled') buildMatches(matchRes.value);
+    if (matchRes.status === 'fulfilled')   buildMatches(matchRes.value);
     else showMatchError();
 
+    showLastUpdated();
   } catch (e) {
     showApiNote('EA-Daten nicht verfügbar.');
   }
+}
+
+async function showLastUpdated() {
+  try {
+    const info = await fetchJSON('data/last_updated.json');
+    if (info && info.updated) {
+      const d = new Date(info.updated);
+      showApiNote(`Daten zuletzt aktualisiert: ${d.toLocaleString('de-DE')}`);
+    }
+  } catch (_) { /* no timestamp file yet */ }
 }
 
 // ===========================
@@ -69,19 +109,19 @@ function applyClubStats(data) {
   const club = Array.isArray(data) ? data[0] : (data[CLUB_ID] || Object.values(data)[0]);
   if (!club) return;
 
-  const wins = parseInt(club.wins || club.totalWins || 0);
+  const wins   = parseInt(club.wins   || club.totalWins   || 0);
   const losses = parseInt(club.losses || club.totalLosses || 0);
-  const draws = parseInt(club.ties || club.totalTies || 0);
-  const goals = parseInt(club.goals || club.totalGoals || 0);
-  const games = wins + losses + draws;
+  const draws  = parseInt(club.ties   || club.totalTies   || 0);
+  const goals  = parseInt(club.goals  || club.totalGoals  || 0);
+  const games  = wins + losses + draws;
   const winRate = games > 0 ? Math.round((wins / games) * 100) : 0;
-  const div = club.divisionRank || club.rankingPoints || '–';
-  const members = club.memberCount || club.members || '–';
+  const div     = club.divisionRank || club.rankingPoints || '–';
+  const members = club.memberCount  || club.members || '–';
   const seasonWins = club.curSeasonWins || club.seasonWins || wins;
 
   animateNumber(document.getElementById('statMember'), members);
-  animateNumber(document.getElementById('statWins'), wins);
-  animateNumber(document.getElementById('statGoals'), goals);
+  animateNumber(document.getElementById('statWins'),   wins);
+  animateNumber(document.getElementById('statGoals'),  goals);
   setText('statDiv', typeof div === 'number' ? `Div ${div}` : div);
 
   setRing('ringWinRate', winRate, winRate + '%');
@@ -109,13 +149,13 @@ function buildSquad(data) {
   const sorted = [...members].sort((a, b) => (b.skOverall || 0) - (a.skOverall || 0));
 
   grid.innerHTML = sorted.map(p => {
-    const pos = posInfo(p.proPos ?? p.position ?? 9);
-    const ovr = p.skOverall || '?';
-    const name = p.name || p.proName || 'Unbekannt';
-    const goals = p.skGoals || 0;
+    const pos     = posInfo(p.proPos ?? p.position ?? 9);
+    const ovr     = p.skOverall || '?';
+    const name    = p.name || p.proName || 'Unbekannt';
+    const goals   = p.skGoals   || 0;
     const assists = p.skAssists || 0;
-    const rating = p.skRating ? parseFloat(p.skRating).toFixed(1) : '–';
-    const isCapt = name.toLowerCase() === CAPTAIN.toLowerCase();
+    const rating  = p.skRating  ? parseFloat(p.skRating).toFixed(1) : '–';
+    const isCapt  = name.toLowerCase() === CAPTAIN.toLowerCase();
 
     return `
       <div class="player-card${isCapt ? ' player-card--captain' : ''}" data-pos="${pos.group}">
@@ -141,6 +181,7 @@ function buildSquad(data) {
       </div>`;
   }).join('');
 
+  buildTopScorers(members);
   initFilters();
   revealCards();
 }
@@ -160,7 +201,7 @@ function buildTopScorers(members) {
     .slice(0, 5);
 
   if (!sorted.length) return;
-  const max = sorted[0].skGoals || 1;
+  const max    = sorted[0].skGoals || 1;
   const colors = ['#f0c040,#ff8c00', '#4a9eff,#7c3aed', '#a855f7,#ec4899', '#22c55e,#16a34a', '#f0c040,#4a9eff'];
 
   document.getElementById('topScorers').innerHTML = sorted.map((p, i) => `
@@ -187,7 +228,7 @@ function buildTopScorers(members) {
 // ===========================
 function buildMatches(data) {
   const matches = Array.isArray(data) ? data : (data.matches || []);
-  const list = document.getElementById('matchList');
+  const list    = document.getElementById('matchList');
 
   if (!matches.length) {
     list.innerHTML = '<p class="no-data">Keine Spiele gefunden.</p>';
@@ -195,18 +236,20 @@ function buildMatches(data) {
   }
 
   list.innerHTML = matches.slice(0, 8).map(m => {
-    const clubs = m.clubs || {};
+    const clubs    = m.clubs || {};
     const clubKeys = Object.keys(clubs);
-    const ourKey = clubKeys.find(k => k === CLUB_ID || clubs[k]?.clubId == CLUB_ID) || clubKeys[0];
-    const oppKey = clubKeys.find(k => k !== ourKey) || clubKeys[1];
-    const us = clubs[ourKey] || {};
-    const opp = clubs[oppKey] || {};
-    const ourGoals = parseInt(us.goals ?? 0);
+    const ourKey   = clubKeys.find(k => k === CLUB_ID || clubs[k]?.clubId == CLUB_ID) || clubKeys[0];
+    const oppKey   = clubKeys.find(k => k !== ourKey) || clubKeys[1];
+    const us       = clubs[ourKey] || {};
+    const opp      = clubs[oppKey] || {};
+    const ourGoals = parseInt(us.goals  ?? 0);
     const oppGoals = parseInt(opp.goals ?? 0);
-    const oppName = opp.details?.name || opp.name || 'Gegner';
-    const result = ourGoals > oppGoals ? 'win' : ourGoals < oppGoals ? 'loss' : 'draw';
-    const badge = result === 'win' ? 'S' : result === 'loss' ? 'N' : 'U';
-    const date = m.timestamp ? new Date(m.timestamp * 1000).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' }) : '–';
+    const oppName  = opp.details?.name || opp.name || 'Gegner';
+    const result   = ourGoals > oppGoals ? 'win' : ourGoals < oppGoals ? 'loss' : 'draw';
+    const badge    = result === 'win' ? 'S' : result === 'loss' ? 'N' : 'U';
+    const date     = m.timestamp
+      ? new Date(m.timestamp * 1000).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })
+      : '–';
 
     return `
       <div class="match-item match-item--${result}">
@@ -240,10 +283,10 @@ function setText(id, val) {
 
 function animateNumber(el, target) {
   if (!el || isNaN(target)) { if (el) el.textContent = target; return; }
-  const n = parseInt(target);
-  const dur = 1800;
+  const n     = parseInt(target);
+  const dur   = 1800;
   const start = performance.now();
-  const tick = (now) => {
+  const tick  = (now) => {
     const p = Math.min((now - start) / dur, 1);
     const e = 1 - Math.pow(1 - p, 3);
     el.textContent = Math.floor(e * n);
@@ -256,7 +299,7 @@ function setRing(id, percent, label) {
   const ring = document.getElementById(id);
   if (!ring) return;
   const circ = 2 * Math.PI * 52;
-  ring.style.strokeDasharray = circ;
+  ring.style.strokeDasharray  = circ;
   ring.style.strokeDashoffset = circ * (1 - Math.min(percent, 100) / 100);
 }
 
@@ -300,14 +343,14 @@ window.addEventListener('scroll', () => {
 // MOBILE MENU
 // ===========================
 const hamburger = document.getElementById('hamburger');
-const navLinks = document.getElementById('navLinks');
+const navLinks  = document.getElementById('navLinks');
 
 hamburger.addEventListener('click', () => {
   navLinks.classList.toggle('open');
-  const bars = hamburger.querySelectorAll('span');
+  const bars   = hamburger.querySelectorAll('span');
   const isOpen = navLinks.classList.contains('open');
   bars[0].style.transform = isOpen ? 'rotate(45deg) translate(5px, 5px)' : '';
-  bars[1].style.opacity = isOpen ? '0' : '1';
+  bars[1].style.opacity   = isOpen ? '0' : '1';
   bars[2].style.transform = isOpen ? 'rotate(-45deg) translate(5px, -5px)' : '';
 });
 
@@ -335,13 +378,13 @@ document.querySelectorAll('.about-card, .stat-card').forEach(el => {
 // ===========================
 // JOIN FORM
 // ===========================
-const joinForm = document.getElementById('joinForm');
+const joinForm    = document.getElementById('joinForm');
 const joinSuccess = document.getElementById('joinSuccess');
 if (joinForm) {
   joinForm.addEventListener('submit', (e) => {
     e.preventDefault();
-    joinForm.style.opacity = '0';
-    joinForm.style.transform = 'scale(0.95)';
+    joinForm.style.opacity    = '0';
+    joinForm.style.transform  = 'scale(0.95)';
     joinForm.style.transition = '0.3s ease';
     setTimeout(() => { joinForm.classList.add('hidden'); joinSuccess.classList.remove('hidden'); }, 300);
   });
@@ -350,8 +393,8 @@ if (joinForm) {
 // ===========================
 // ACTIVE NAV
 // ===========================
-const sections = document.querySelectorAll('section[id]');
-const navAnchors = document.querySelectorAll('.nav-links a[href^="#"]');
+const sections    = document.querySelectorAll('section[id]');
+const navAnchors  = document.querySelectorAll('.nav-links a[href^="#"]');
 const activeObserver = new IntersectionObserver((entries) => {
   entries.forEach(entry => {
     if (entry.isIntersecting) {
