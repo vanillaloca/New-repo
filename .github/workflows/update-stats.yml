@@ -1,0 +1,65 @@
+name: Update Club Stats
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # täglich 06:00 UTC
+  workflow_dispatch:        # manueller Start
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
+        with:
+          ref: gh-pages
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch EA API data
+        run: |
+          mkdir -p data
+
+          ea_fetch() {
+            curl -sf --max-time 15 \
+              -H "Accept: application/json" \
+              -H "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" \
+              -H "Referer: https://www.ea.com/" \
+              -H "Origin: https://www.ea.com" \
+              "$1"
+          }
+
+          BASE="https://proclubs.ea.com/api/fc"
+          PLATFORM="common-gen5"
+          CLUB_ID="598236"
+
+          echo "Fetching club stats..."
+          ea_fetch "${BASE}/clubs/overallStats?platform=${PLATFORM}&clubIds=${CLUB_ID}" \
+            > data/club.json 2>/dev/null || echo "{}" > data/club.json
+
+          echo "Fetching members..."
+          ea_fetch "${BASE}/clubs/members?platform=${PLATFORM}&clubId=${CLUB_ID}" \
+            > data/members.json 2>/dev/null || echo "{}" > data/members.json
+
+          echo "Fetching matches..."
+          ea_fetch "${BASE}/clubs/matches?matchType=gameType9&platform=${PLATFORM}&clubIds=${CLUB_ID}" \
+            > data/matches.json 2>/dev/null || echo "[]" > data/matches.json
+
+          echo "{\"updated\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > data/last_updated.json
+
+          echo "--- club.json preview ---"
+          head -c 200 data/club.json || true
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
+          else
+            git commit -m "chore: update club stats $(date -u +%Y-%m-%d)"
+            git push origin gh-pages
+          fi
