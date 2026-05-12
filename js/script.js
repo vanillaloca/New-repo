@@ -1,412 +1,721 @@
 'use strict';
 
-const CLUB_ID = '598236';
-const PLATFORM = 'common-gen5';
-const CAPTAIN = 'Tim Kuhn';
+// ============================================================
+// Configuration
+// ============================================================
+const YF_BASE   = 'https://query2.finance.yahoo.com';
+const CORS_PROXY = 'https://corsproxy.io/?';
 
-const BASE = 'https://proclubs.ea.com/api/fc';
-const PROXY = 'https://api.allorigins.win/raw?url=';
+let priceChart    = null;
+let currentTicker = '';
+let fullData      = null;
+let watchlist     = JSON.parse(localStorage.getItem('finmetrics_watchlist') || '[]');
 
-const POS_MAP = {
-  0:  { label: 'TW',  name: 'Torwart',                    group: 'gk',  color: '#f0c040' },
-  1:  { label: 'LI',  name: 'Libero',                     group: 'def', color: '#4a9eff' },
-  2:  { label: 'RFV', name: 'Rechter Flügelverteidiger',  group: 'def', color: '#4a9eff' },
-  3:  { label: 'RV',  name: 'Rechtsverteidiger',           group: 'def', color: '#4a9eff' },
-  4:  { label: 'IV',  name: 'Innenverteidiger',            group: 'def', color: '#4a9eff' },
-  5:  { label: 'LV',  name: 'Linksverteidiger',            group: 'def', color: '#4a9eff' },
-  6:  { label: 'LFV', name: 'Linker Flügelverteidiger',   group: 'def', color: '#4a9eff' },
-  7:  { label: 'DM',  name: 'Defensives Mittelfeld',       group: 'mid', color: '#a855f7' },
-  8:  { label: 'RM',  name: 'Rechtes Mittelfeld',          group: 'mid', color: '#a855f7' },
-  9:  { label: 'ZM',  name: 'Zentrales Mittelfeld',        group: 'mid', color: '#a855f7' },
-  10: { label: 'OM',  name: 'Offensives Mittelfeld',       group: 'mid', color: '#a855f7' },
-  11: { label: 'LM',  name: 'Linkes Mittelfeld',           group: 'mid', color: '#a855f7' },
-  12: { label: 'RA',  name: 'Rechtsaußen',                 group: 'att', color: '#f0c040' },
-  13: { label: 'ST',  name: 'Mittelstürmer',               group: 'att', color: '#f0c040' },
-  14: { label: 'LA',  name: 'Linksaußen',                  group: 'att', color: '#f0c040' },
-  25: { label: 'CF',  name: 'Hängende Spitze',             group: 'att', color: '#f0c040' },
-};
+// ============================================================
+// API Helpers
+// ============================================================
 
-function posInfo(pos) {
-  return POS_MAP[pos] || { label: 'UNK', name: 'Unbekannt', group: 'mid', color: '#6b7280' };
-}
+async function apiFetch(url) {
+  // Try direct first (Yahoo sometimes allows CORS)
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (res.ok) {
+      const json = await res.json();
+      if (json && !json.quoteSummary?.error && !json.chart?.error) return json;
+    }
+  } catch (_) { /* CORS or network — fall through */ }
 
-// ===========================
-// FETCH HELPERS
-// ===========================
-async function fetchJSON(url) {
-  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  // Proxy fallback
+  const proxied = CORS_PROXY + encodeURIComponent(url);
+  const res = await fetch(proxied, { signal: AbortSignal.timeout(12000) });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.json();
 }
 
-async function fetchEA(path) {
-  return fetchJSON(`${BASE}${path}`);
+async function fetchQuoteSummary(ticker) {
+  const modules = [
+    'price',
+    'summaryDetail',
+    'defaultKeyStatistics',
+    'financialData',
+    'incomeStatementHistory',
+    'balanceSheetHistory',
+    'cashflowStatementHistory',
+  ].join(',');
+
+  const url = `${YF_BASE}/v10/finance/quoteSummary/${ticker}?modules=${modules}&lang=en-US&region=US`;
+  const data = await apiFetch(url);
+
+  if (data.quoteSummary?.error) {
+    throw new Error(data.quoteSummary.error.description || 'Unknown error');
+  }
+  if (!data.quoteSummary?.result?.[0]) {
+    throw new Error(`No data found for "${ticker}"`);
+  }
+  return data.quoteSummary.result[0];
 }
 
-async function fetchViaProxy(path) {
-  const target = encodeURIComponent(`${BASE}${path}`);
-  return fetchJSON(`${PROXY}${target}`);
+async function fetchPriceHistory(ticker, range = '1y', interval = '1d') {
+  const url = `${YF_BASE}/v8/finance/chart/${ticker}?interval=${interval}&range=${range}&lang=en-US&region=US`;
+  const data = await apiFetch(url);
+
+  if (data.chart?.error) throw new Error(data.chart.error.description);
+  if (!data.chart?.result?.[0]) throw new Error('No chart data');
+  return data.chart.result[0];
 }
 
-// Three-tier: local cached file → direct EA API → CORS proxy
-async function fetchWithFallback(localFile, eaPath) {
-  // Tier 1: local data/*.json (filled daily by GitHub Actions)
-  try {
-    const data = await fetchJSON(localFile);
-    const isEmpty = Array.isArray(data) ? data.length === 0 : Object.keys(data).length === 0;
-    if (!isEmpty) return data;
-  } catch (_) { /* fall through */ }
+// ============================================================
+// Format Utilities
+// ============================================================
 
-  // Tier 2: direct EA API (browser requests bypass Cloudflare allowlist)
-  try {
-    return await fetchEA(eaPath);
-  } catch (_) { /* fall through */ }
-
-  // Tier 3: CORS proxy as last resort
-  return fetchViaProxy(eaPath);
+function fmtBig(num) {
+  if (num == null || isNaN(num)) return 'N/A';
+  const abs = Math.abs(num);
+  const sign = num < 0 ? '-' : '';
+  if (abs >= 1e12) return sign + (abs / 1e12).toFixed(2) + 'T';
+  if (abs >= 1e9)  return sign + (abs / 1e9).toFixed(2)  + 'B';
+  if (abs >= 1e6)  return sign + (abs / 1e6).toFixed(2)  + 'M';
+  if (abs >= 1e3)  return sign + (abs / 1e3).toFixed(1)  + 'K';
+  return sign + abs.toFixed(2);
 }
 
-// ===========================
-// LOAD EVERYTHING
-// ===========================
-async function loadClubData() {
+function fmtCurrency(num) {
+  if (num == null || isNaN(num)) return 'N/A';
+  return '$' + fmtBig(num);
+}
+
+function fmtPct(num, decimals = 2) {
+  if (num == null || isNaN(num)) return 'N/A';
+  return (num * 100).toFixed(decimals) + '%';
+}
+
+function fmtDate(ts) {
+  if (!ts) return 'N/A';
+  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// Safely extract .raw or primitive from Yahoo Finance field
+function raw(obj, ...keys) {
+  for (const key of keys) {
+    let val = obj;
+    for (const part of key.split('.')) {
+      if (val == null) { val = null; break; }
+      val = val[part];
+    }
+    if (val == null) continue;
+    if (typeof val === 'object' && val.raw != null) return val.raw;
+    if (typeof val !== 'object') return val;
+  }
+  return null;
+}
+
+// ============================================================
+// DOM Helpers
+// ============================================================
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text ?? 'N/A';
+}
+
+function setColored(id, text, positive) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text ?? 'N/A';
+  el.className = 'kpi-value' + (positive === true ? ' positive' : positive === false ? ' negative' : '');
+}
+
+function show(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = '';
+}
+
+function hide(id) {
+  const el = document.getElementById(id);
+  if (el) el.style.display = 'none';
+}
+
+// ============================================================
+// Render: Stock Header
+// ============================================================
+
+function renderHeader(data, ticker) {
+  const p = data.price || {};
+  const name      = raw(p, 'longName', 'shortName') || ticker;
+  const exchange  = raw(p, 'exchangeName') || '';
+  const sector    = raw(p, 'sector') || raw(data.summaryProfile, 'sector') || '';
+  const price     = raw(p, 'regularMarketPrice');
+  const change    = raw(p, 'regularMarketChange');
+  const changePct = raw(p, 'regularMarketChangePercent');
+
+  setText('stockName', name);
+  setText('stockTickerBadge', ticker);
+  setText('stockExchange', exchange);
+  setText('stockSector', sector || 'Equity');
+  setText('stockLogoText', ticker.slice(0, 2));
+
+  if (price != null) {
+    setText('currentPrice', '$' + price.toFixed(2));
+
+    const up = change >= 0;
+    const changeEl = document.getElementById('priceChange');
+    if (changeEl) changeEl.className = 'price-change ' + (up ? 'positive' : 'negative');
+
+    setText('changeAmount', (up ? '+' : '') + '$' + (change ?? 0).toFixed(2));
+
+    const badge = document.getElementById('changeBadge');
+    if (badge) {
+      badge.textContent = (up ? '+' : '') + (changePct != null ? fmtPct(changePct) : '0.00%');
+      badge.className = 'change-badge ' + (up ? 'positive' : 'negative');
+    }
+  }
+
+  const marketState = raw(p, 'marketState');
+  setText('priceDate', marketState === 'REGULAR' ? 'Market Open' : 'Market Closed · ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+
+  const wlBtn = document.getElementById('watchlistBtn');
+  if (wlBtn) wlBtn.dataset.ticker = ticker;
+  updateWatchlistBtn(ticker);
+
+  show('stockHeader');
+}
+
+// ============================================================
+// Render: Quick Stats
+// ============================================================
+
+function renderQuickStats(data) {
+  const fd = data.financialData      || {};
+  const sd = data.summaryDetail      || {};
+  const ks = data.defaultKeyStatistics || {};
+
+  setText('statMarketCap',  fmtCurrency(raw(sd, 'marketCap')));
+  setText('statPE',         raw(sd, 'trailingPE') != null ? parseFloat(raw(sd, 'trailingPE')).toFixed(2) + 'x' : 'N/A');
+  setText('statEPS',        raw(ks, 'trailingEps') != null ? '$' + parseFloat(raw(ks, 'trailingEps')).toFixed(2) : 'N/A');
+  setText('statRevenue',    fmtCurrency(raw(fd, 'totalRevenue')));
+  setText('statNetIncome',  fmtCurrency(raw(ks, 'netIncomeToCommon')));
+  setText('statFCF',        fmtCurrency(raw(fd, 'freeCashflow')));
+  const dy = raw(sd, 'dividendYield');
+  setText('statDivYield',   dy != null ? fmtPct(dy) : 'N/A');
+  const beta = raw(sd, 'beta');
+  setText('statBeta',       beta != null ? parseFloat(beta).toFixed(2) : 'N/A');
+
+  show('quickStats');
+}
+
+// ============================================================
+// Render: KPI Cards
+// ============================================================
+
+function renderKPIs(data) {
+  const fd = data.financialData        || {};
+  const sd = data.summaryDetail        || {};
+  const ks = data.defaultKeyStatistics || {};
+  const pr = data.price                || {};
+
+  // --- Valuation ---
+  const pe = raw(sd, 'trailingPE');
+  setText('kpiPE', pe != null ? parseFloat(pe).toFixed(2) + 'x' : 'N/A');
+
+  const fpe = raw(sd, 'forwardPE');
+  setText('kpiForwardPE', fpe != null ? parseFloat(fpe).toFixed(2) + 'x' : 'N/A');
+
+  const peg = raw(ks, 'pegRatio');
+  setText('kpiPEG', peg != null ? parseFloat(peg).toFixed(2) + 'x' : 'N/A');
+
+  const pb = raw(ks, 'priceToBook');
+  setText('kpiPB', pb != null ? parseFloat(pb).toFixed(2) + 'x' : 'N/A');
+
+  const ps = raw(ks, 'enterpriseToRevenue');
+  setText('kpiPS', ps != null ? parseFloat(ps).toFixed(2) + 'x' : 'N/A');
+
+  const eveb = raw(ks, 'enterpriseToEbitda');
+  setText('kpiEVEBITDA', eveb != null ? parseFloat(eveb).toFixed(2) + 'x' : 'N/A');
+
+  setText('kpiEV', fmtCurrency(raw(ks, 'enterpriseValue')));
+
+  const bv = raw(ks, 'bookValue');
+  setText('kpiBookValue', bv != null ? '$' + parseFloat(bv).toFixed(2) : 'N/A');
+
+  // --- Profitability ---
+  const margin = (id, val) => {
+    if (val == null) { setText(id, 'N/A'); return; }
+    setColored(id, fmtPct(val), val > 0);
+  };
+
+  margin('kpiGrossMargin',   raw(fd, 'grossMargins'));
+  margin('kpiOpMargin',      raw(fd, 'operatingMargins'));
+  margin('kpiNetMargin',     raw(fd, 'profitMargins'));
+  margin('kpiEBITDAMargin',  raw(fd, 'ebitdaMargins'));
+  margin('kpiROE',           raw(fd, 'returnOnEquity'));
+  margin('kpiROA',           raw(fd, 'returnOnAssets'));
+
+  const ebitda = raw(fd, 'ebitda');
+  setText('kpiEBITDA', fmtCurrency(ebitda));
+
+  const roic = raw(fd, 'returnOnCapital');
+  if (roic != null) {
+    setColored('kpiROIC', fmtPct(roic), roic > 0);
+  } else {
+    setText('kpiROIC', 'N/A');
+  }
+
+  // --- Financial Health ---
+  setText('kpiRevenue', fmtCurrency(raw(fd, 'totalRevenue')));
+
+  const ni = raw(ks, 'netIncomeToCommon');
+  if (ni != null) { setColored('kpiNetIncome', fmtCurrency(ni), ni > 0); } else { setText('kpiNetIncome', 'N/A'); }
+
+  setText('kpiTotalCash', fmtCurrency(raw(fd, 'totalCash')));
+  setText('kpiTotalDebt', fmtCurrency(raw(fd, 'totalDebt')));
+
+  const de = raw(fd, 'debtToEquity');
+  setText('kpiDebtEquity', de != null ? (de / 100).toFixed(2) + 'x' : 'N/A');
+
+  const cr = raw(fd, 'currentRatio');
+  setText('kpiCurrentRatio', cr != null ? parseFloat(cr).toFixed(2) + 'x' : 'N/A');
+
+  const qr = raw(fd, 'quickRatio');
+  setText('kpiQuickRatio', qr != null ? parseFloat(qr).toFixed(2) + 'x' : 'N/A');
+
+  const fcf = raw(fd, 'freeCashflow');
+  if (fcf != null) { setColored('kpiFCF', fmtCurrency(fcf), fcf > 0); } else { setText('kpiFCF', 'N/A'); }
+
+  // --- Growth & Dividends ---
+  const growth = (id, val) => {
+    if (val == null) { setText(id, 'N/A'); return; }
+    setColored(id, (val > 0 ? '+' : '') + fmtPct(val), val > 0);
+  };
+
+  growth('kpiRevenueGrowth',  raw(fd, 'revenueGrowth'));
+  growth('kpiEarningsGrowth', raw(fd, 'earningsGrowth'));
+
+  const eps = raw(ks, 'trailingEps');
+  setText('kpiEPS', eps != null ? '$' + parseFloat(eps).toFixed(2) : 'N/A');
+
+  const fwEPS = raw(ks, 'forwardEps');
+  setText('kpiForwardEPS', fwEPS != null ? '$' + parseFloat(fwEPS).toFixed(2) : 'N/A');
+
+  const dy = raw(sd, 'dividendYield');
+  setText('kpiDivYield', dy != null ? fmtPct(dy) : 'N/A');
+
+  const dr = raw(sd, 'dividendRate');
+  setText('kpiDivRate', dr != null ? '$' + parseFloat(dr).toFixed(2) : 'N/A');
+
+  const payout = raw(sd, 'payoutRatio');
+  setText('kpiPayoutRatio', payout != null ? fmtPct(payout) : 'N/A');
+
+  setText('kpiExDivDate', fmtDate(raw(sd, 'exDividendDate')));
+
+  // --- Market Data ---
+  const h52 = raw(sd, 'fiftyTwoWeekHigh');
+  const l52 = raw(sd, 'fiftyTwoWeekLow');
+  setText('kpi52High', h52 != null ? '$' + parseFloat(h52).toFixed(2) : 'N/A');
+  setText('kpi52Low',  l52 != null ? '$' + parseFloat(l52).toFixed(2) : 'N/A');
+
+  const ma50  = raw(sd, 'fiftyDayAverage');
+  const ma200 = raw(sd, 'twoHundredDayAverage');
+  setText('kpi50MA',  ma50  != null ? '$' + parseFloat(ma50).toFixed(2)  : 'N/A');
+  setText('kpi200MA', ma200 != null ? '$' + parseFloat(ma200).toFixed(2) : 'N/A');
+
+  setText('kpiVolume',    fmtBig(raw(pr, 'regularMarketVolume')));
+  setText('kpiAvgVolume', fmtBig(raw(sd, 'averageVolume10days')));
+  setText('kpiShares',    fmtBig(raw(ks, 'sharesOutstanding')));
+  setText('kpiFloat',     fmtBig(raw(ks, 'floatShares')));
+
+  // --- Analyst ---
+  const curPrice   = raw(pr, 'regularMarketPrice');
+  const targetMean = raw(fd, 'targetMeanPrice');
+  const targetHigh = raw(fd, 'targetHighPrice');
+  const targetLow  = raw(fd, 'targetLowPrice');
+  const recKey     = raw(fd, 'recommendationKey') || '';
+  const rating     = raw(fd, 'recommendationMean');
+  const numAn      = raw(fd, 'numberOfAnalystOpinions');
+  const shortRatio = raw(ks, 'shortRatio');
+
+  const recDisplay = recKey
+    ? recKey.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
+    : 'N/A';
+
+  const recEl = document.getElementById('kpiRecommendation');
+  if (recEl) {
+    recEl.textContent = recDisplay;
+    const isBuy  = recKey.includes('buy');
+    const isSell = recKey.includes('sell');
+    recEl.className = 'kpi-value' + (isBuy ? ' positive' : isSell ? ' negative' : '');
+  }
+
+  setText('kpiRating',      rating != null ? parseFloat(rating).toFixed(1) + ' / 5' : 'N/A');
+  setText('kpiTargetPrice', targetMean != null ? '$' + parseFloat(targetMean).toFixed(2) : 'N/A');
+  setText('kpiTargetHigh',  targetHigh != null ? '$' + parseFloat(targetHigh).toFixed(2) : 'N/A');
+  setText('kpiTargetLow',   targetLow  != null ? '$' + parseFloat(targetLow).toFixed(2)  : 'N/A');
+  setText('kpiAnalystCount', numAn != null ? numAn.toString() : 'N/A');
+  setText('kpiShortRatio',  shortRatio != null ? parseFloat(shortRatio).toFixed(2) : 'N/A');
+
+  if (targetMean != null && curPrice != null) {
+    const upside = (targetMean - curPrice) / curPrice;
+    setColored('kpiUpside', (upside > 0 ? '+' : '') + fmtPct(upside), upside > 0);
+  } else {
+    setText('kpiUpside', 'N/A');
+  }
+
+  show('kpis');
+}
+
+// ============================================================
+// Render: Financial Statements
+// ============================================================
+
+function renderFinancials(data) {
+  fullData = data;
+  renderIncomeTable(data.incomeStatementHistory?.incomeStatementHistory || []);
+  show('financials');
+}
+
+function buildFinTable(fields, statements) {
+  if (!statements.length) return '<p class="no-data">No data available.</p>';
+  const years = statements.slice(0, 4).reverse();
+  const head = years.map(s => {
+    const ts = s.endDate?.raw ?? s.endDate;
+    return `<th>${ts ? new Date(ts * 1000).getFullYear() : '—'}</th>`;
+  }).join('');
+
+  const rows = fields.map(f => {
+    const cells = years.map(s => {
+      const val = s[f.key]?.raw ?? s[f.key];
+      if (val == null) return '<td class="fin-value">N/A</td>';
+      const cls = f.colored ? (val > 0 ? ' positive' : val < 0 ? ' negative' : '') : '';
+      return `<td class="fin-value${cls}">${fmtCurrency(val)}</td>`;
+    }).join('');
+    return `<tr><td class="fin-label">${f.label}</td>${cells}</tr>`;
+  }).join('');
+
+  return `<div class="fin-table-wrapper">
+    <table class="fin-table">
+      <thead><tr><th>Metric</th>${head}</tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderIncomeTable(statements) {
+  const fields = [
+    { key: 'totalRevenue',            label: 'Total Revenue' },
+    { key: 'grossProfit',             label: 'Gross Profit',       colored: true },
+    { key: 'totalOperatingExpenses',  label: 'Operating Expenses', colored: false },
+    { key: 'ebit',                    label: 'EBIT',               colored: true },
+    { key: 'netIncome',               label: 'Net Income',         colored: true },
+    { key: 'researchDevelopment',     label: 'R&D Expenses' },
+  ];
+  document.getElementById('finContent').innerHTML = buildFinTable(fields, statements);
+}
+
+function renderBalanceTable(statements) {
+  const fields = [
+    { key: 'totalAssets',             label: 'Total Assets' },
+    { key: 'totalCurrentAssets',      label: 'Current Assets' },
+    { key: 'cash',                    label: 'Cash & Equivalents' },
+    { key: 'totalLiab',              label: 'Total Liabilities' },
+    { key: 'totalCurrentLiabilities', label: 'Current Liabilities' },
+    { key: 'longTermDebt',           label: 'Long-Term Debt' },
+    { key: 'totalStockholderEquity', label: "Stockholders' Equity", colored: true },
+  ];
+  document.getElementById('finContent').innerHTML = buildFinTable(fields, statements);
+}
+
+function renderCashFlowTable(statements) {
+  const processed = statements.map(s => {
+    const cfo   = s.totalCashFromOperatingActivities?.raw ?? s.totalCashFromOperatingActivities ?? 0;
+    const capex = s.capitalExpenditures?.raw ?? s.capitalExpenditures ?? 0;
+    return { ...s, freeCashFlow: { raw: cfo + capex } }; // capex is negative in YF
+  });
+
+  const fields = [
+    { key: 'totalCashFromOperatingActivities', label: 'Operating Cash Flow', colored: true },
+    { key: 'capitalExpenditures',              label: 'Capital Expenditures' },
+    { key: 'freeCashFlow',                     label: 'Free Cash Flow',      colored: true },
+    { key: 'totalCashFromInvestingActivities', label: 'Investing Activities' },
+    { key: 'totalCashFromFinancingActivities', label: 'Financing Activities' },
+    { key: 'dividendsPaid',                   label: 'Dividends Paid' },
+  ];
+  document.getElementById('finContent').innerHTML = buildFinTable(fields, processed);
+}
+
+// ============================================================
+// Render: Price Chart
+// ============================================================
+
+function renderChart(chartData) {
+  const timestamps = chartData.timestamp || [];
+  const closes     = chartData.indicators?.quote?.[0]?.close || [];
+
+  const labels = timestamps.map(ts =>
+    new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  );
+  const prices = closes.map(v => v != null ? +v.toFixed(2) : null);
+
+  if (priceChart) { priceChart.destroy(); priceChart = null; }
+
+  const isUp = prices.length >= 2 && (prices[prices.length - 1] ?? 0) >= (prices[0] ?? 0);
+  const lineColor = isUp ? '#10b981' : '#ef4444';
+
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 320);
+  grad.addColorStop(0, isUp ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  priceChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: prices,
+        borderColor: lineColor,
+        backgroundColor: grad,
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: lineColor,
+        spanGaps: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f1628',
+          borderColor: '#1e3254',
+          borderWidth: 1,
+          titleColor: '#8892a4',
+          bodyColor: '#f0f4ff',
+          padding: 10,
+          callbacks: {
+            label: ctx => ' $' + (ctx.parsed.y?.toFixed(2) ?? '—'),
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.03)' },
+          ticks: { color: '#8892a4', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'right',
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          ticks: {
+            color: '#8892a4',
+            font: { size: 11 },
+            callback: v => '$' + v.toFixed(0),
+          },
+        },
+      },
+    },
+  });
+}
+
+async function loadChart(ticker, range, interval) {
   try {
-    const [clubRes, membersRes, matchRes] = await Promise.allSettled([
-      fetchWithFallback('data/club.json',    `/clubs/overallStats?platform=${PLATFORM}&clubIds=${CLUB_ID}`),
-      fetchWithFallback('data/members.json', `/clubs/members?platform=${PLATFORM}&clubId=${CLUB_ID}`),
-      fetchWithFallback('data/matches.json', `/clubs/matches?matchType=gameType9&platform=${PLATFORM}&clubIds=${CLUB_ID}`),
-    ]);
-
-    if (clubRes.status === 'fulfilled')    applyClubStats(clubRes.value);
-    else showApiNote('Club-Stats nicht verfügbar.');
-
-    if (membersRes.status === 'fulfilled') buildSquad(membersRes.value);
-    else showSquadError();
-
-    if (matchRes.status === 'fulfilled')   buildMatches(matchRes.value);
-    else showMatchError();
-
-    showLastUpdated();
+    const chartData = await fetchPriceHistory(ticker, range, interval);
+    renderChart(chartData);
   } catch (e) {
-    showApiNote('EA-Daten nicht verfügbar.');
+    console.warn('Chart load failed:', e.message);
   }
 }
 
-async function showLastUpdated() {
-  try {
-    const info = await fetchJSON('data/last_updated.json');
-    if (info && info.updated) {
-      const d = new Date(info.updated);
-      showApiNote(`Daten zuletzt aktualisiert: ${d.toLocaleString('de-DE')}`);
-    }
-  } catch (_) { /* no timestamp file yet */ }
+// ============================================================
+// Watchlist
+// ============================================================
+
+function updateWatchlistBtn(ticker) {
+  const btn = document.getElementById('watchlistBtn');
+  if (!btn) return;
+  const inList = watchlist.includes(ticker);
+  btn.innerHTML = inList
+    ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> In Watchlist`
+    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> Add to Watchlist`;
+  btn.classList.toggle('active', inList);
 }
 
-// ===========================
-// CLUB STATS
-// ===========================
-function applyClubStats(data) {
-  const club = Array.isArray(data) ? data[0] : (data[CLUB_ID] || Object.values(data)[0]);
-  if (!club) return;
-
-  const wins   = parseInt(club.wins   || club.totalWins   || 0);
-  const losses = parseInt(club.losses || club.totalLosses || 0);
-  const draws  = parseInt(club.ties   || club.totalTies   || 0);
-  const goals  = parseInt(club.goals  || club.totalGoals  || 0);
-  const games  = wins + losses + draws;
-  const winRate = games > 0 ? Math.round((wins / games) * 100) : 0;
-  const div     = club.divisionRank || club.rankingPoints || '–';
-  const members = club.memberCount  || club.members || '–';
-  const seasonWins = club.curSeasonWins || club.seasonWins || wins;
-
-  animateNumber(document.getElementById('statMember'), members);
-  animateNumber(document.getElementById('statWins'),   wins);
-  animateNumber(document.getElementById('statGoals'),  goals);
-  setText('statDiv', typeof div === 'number' ? `Div ${div}` : div);
-
-  setRing('ringWinRate', winRate, winRate + '%');
-  setText('valWinRate', winRate + '%');
-  setText('labelWinRate', `${wins}S / ${losses}N / ${draws}U`);
-
-  setRing('ringGoals', Math.min(goals / 5, 100), goals);
-  setText('valGoals', goals);
-
-  setRing('ringSeason', Math.min((seasonWins / 10) * 100, 100), seasonWins);
-  setText('valSeason', seasonWins);
-
-  setRing('ringGames', Math.min((games / 20) * 100, 100), games);
-  setText('valGames', games);
+function toggleWatchlist(ticker) {
+  const idx = watchlist.indexOf(ticker);
+  if (idx === -1) watchlist.push(ticker);
+  else watchlist.splice(idx, 1);
+  localStorage.setItem('finmetrics_watchlist', JSON.stringify(watchlist));
+  updateWatchlistBtn(ticker);
+  renderWatchlistGrid();
 }
 
-// ===========================
-// SQUAD
-// ===========================
-function buildSquad(data) {
-  const members = data.members || data || [];
-  const grid = document.getElementById('squadGrid');
-  if (!members.length) { grid.innerHTML = '<p class="no-data">Keine Spieler gefunden.</p>'; return; }
+function renderWatchlistGrid() {
+  const grid  = document.getElementById('watchlistGrid');
+  const empty = document.getElementById('watchlistEmpty');
 
-  const sorted = [...members].sort((a, b) => (b.skOverall || 0) - (a.skOverall || 0));
+  grid.querySelectorAll('.watchlist-item').forEach(el => el.remove());
 
-  grid.innerHTML = sorted.map(p => {
-    const pos     = posInfo(p.proPos ?? p.position ?? 9);
-    const ovr     = p.skOverall || '?';
-    const name    = p.name || p.proName || 'Unbekannt';
-    const goals   = p.skGoals   || 0;
-    const assists = p.skAssists || 0;
-    const rating  = p.skRating  ? parseFloat(p.skRating).toFixed(1) : '–';
-    const isCapt  = name.toLowerCase() === CAPTAIN.toLowerCase();
-
-    return `
-      <div class="player-card${isCapt ? ' player-card--captain' : ''}" data-pos="${pos.group}">
-        <div class="player-card__rating">${ovr}</div>
-        <div class="player-card__pos" style="background:${pos.color}22;color:${pos.color}">${pos.label}</div>
-        ${isCapt ? '<div class="captain-badge">©</div>' : ''}
-        <div class="player-card__avatar">
-          <svg viewBox="0 0 80 80" fill="none">
-            <circle cx="40" cy="30" r="18" fill="${pos.color}" opacity=".2"/>
-            <circle cx="40" cy="28" r="14" fill="${pos.color}" opacity=".5"/>
-            <ellipse cx="40" cy="68" rx="24" ry="16" fill="${pos.color}" opacity=".15"/>
-          </svg>
-        </div>
-        <div class="player-card__info">
-          <h4>${name}${isCapt ? ' <span class="capt-icon">Kapitän</span>' : ''}</h4>
-          <span>${pos.name}</span>
-        </div>
-        <div class="player-card__stats">
-          <div><span>TORE</span><b>${goals}</b></div>
-          <div><span>ASS</span><b>${assists}</b></div>
-          <div><span>WTG</span><b>${rating}</b></div>
-        </div>
-      </div>`;
-  }).join('');
-
-  buildTopScorers(members);
-  initFilters();
-  revealCards();
-}
-
-function showSquadError() {
-  document.getElementById('squadGrid').innerHTML =
-    '<p class="no-data">Squad-Daten konnten nicht geladen werden.</p>';
-}
-
-// ===========================
-// TOP SCORERS
-// ===========================
-function buildTopScorers(members) {
-  const sorted = [...members]
-    .filter(p => (p.skGoals || 0) > 0)
-    .sort((a, b) => (b.skGoals || 0) - (a.skGoals || 0))
-    .slice(0, 5);
-
-  if (!sorted.length) return;
-  const max    = sorted[0].skGoals || 1;
-  const colors = ['#f0c040,#ff8c00', '#4a9eff,#7c3aed', '#a855f7,#ec4899', '#22c55e,#16a34a', '#f0c040,#4a9eff'];
-
-  document.getElementById('topScorers').innerHTML = sorted.map((p, i) => `
-    <div class="stats-bar-item">
-      <div class="stats-bar-meta">
-        <span>${p.name || p.proName}</span>
-        <span>${p.skGoals} Tore</span>
-      </div>
-      <div class="stats-bar-track">
-        <div class="stats-bar-fill" data-width="${Math.round((p.skGoals / max) * 95)}"
-          style="background:linear-gradient(90deg,${colors[i]});width:0%"></div>
-      </div>
-    </div>`).join('');
-
-  setTimeout(() => {
-    document.querySelectorAll('.stats-bar-fill').forEach(el => {
-      el.style.width = el.dataset.width + '%';
-    });
-  }, 300);
-}
-
-// ===========================
-// MATCHES
-// ===========================
-function buildMatches(data) {
-  const matches = Array.isArray(data) ? data : (data.matches || []);
-  const list    = document.getElementById('matchList');
-
-  if (!matches.length) {
-    list.innerHTML = '<p class="no-data">Keine Spiele gefunden.</p>';
+  if (!watchlist.length) {
+    empty.style.display = '';
     return;
   }
+  empty.style.display = 'none';
 
-  list.innerHTML = matches.slice(0, 8).map(m => {
-    const clubs    = m.clubs || {};
-    const clubKeys = Object.keys(clubs);
-    const ourKey   = clubKeys.find(k => k === CLUB_ID || clubs[k]?.clubId == CLUB_ID) || clubKeys[0];
-    const oppKey   = clubKeys.find(k => k !== ourKey) || clubKeys[1];
-    const us       = clubs[ourKey] || {};
-    const opp      = clubs[oppKey] || {};
-    const ourGoals = parseInt(us.goals  ?? 0);
-    const oppGoals = parseInt(opp.goals ?? 0);
-    const oppName  = opp.details?.name || opp.name || 'Gegner';
-    const result   = ourGoals > oppGoals ? 'win' : ourGoals < oppGoals ? 'loss' : 'draw';
-    const badge    = result === 'win' ? 'S' : result === 'loss' ? 'N' : 'U';
-    const date     = m.timestamp
-      ? new Date(m.timestamp * 1000).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })
-      : '–';
-
-    return `
-      <div class="match-item match-item--${result}">
-        <div class="match-date">${date}</div>
-        <div class="match-teams">
-          <span class="match-home">nk Verdansk</span>
-          <div class="match-score">
-            <span>${ourGoals}</span>
-            <span class="match-score-sep">:</span>
-            <span>${oppGoals}</span>
-          </div>
-          <span class="match-away">${oppName}</span>
-        </div>
-        <div class="match-badge match-badge--${result}">${badge}</div>
-      </div>`;
-  }).join('');
+  watchlist.forEach(ticker => {
+    const item = document.createElement('div');
+    item.className = 'watchlist-item';
+    item.innerHTML = `
+      <span class="watchlist-ticker">${ticker}</span>
+      <button class="watchlist-remove" title="Remove">×</button>
+    `;
+    item.querySelector('.watchlist-ticker').addEventListener('click', () => searchStock(ticker));
+    item.querySelector('.watchlist-remove').addEventListener('click', e => {
+      e.stopPropagation();
+      toggleWatchlist(ticker);
+    });
+    grid.appendChild(item);
+  });
 }
 
-function showMatchError() {
-  document.getElementById('matchList').innerHTML =
-    '<p class="no-data">Spielergebnisse konnten nicht geladen werden.</p>';
+// ============================================================
+// Main Search
+// ============================================================
+
+async function searchStock(ticker) {
+  ticker = ticker.trim().toUpperCase();
+  if (!ticker) return;
+
+  currentTicker = ticker;
+
+  show('loadingOverlay');
+  hide('errorBanner');
+  hide('stockHeader');
+  hide('chartSection');
+  hide('quickStats');
+  hide('kpis');
+  hide('financials');
+
+  try {
+    const [summaryData, chartData] = await Promise.allSettled([
+      fetchQuoteSummary(ticker),
+      fetchPriceHistory(ticker, '1y', '1d'),
+    ]);
+
+    if (summaryData.status === 'rejected') {
+      throw summaryData.reason;
+    }
+
+    const data = summaryData.value;
+
+    renderHeader(data, ticker);
+    renderQuickStats(data);
+    renderKPIs(data);
+    renderFinancials(data);
+
+    if (chartData.status === 'fulfilled') {
+      renderChart(chartData.value);
+      show('chartSection');
+    }
+
+    document.getElementById('stockHeader')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch (err) {
+    console.error('searchStock error:', err);
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorMessage').textContent =
+      `Could not fetch data for "${ticker}". ${err.message || 'Please check the ticker and try again.'}`;
+    if (banner) banner.style.display = 'flex';
+    banner?.scrollIntoView({ behavior: 'smooth' });
+  } finally {
+    hide('loadingOverlay');
+  }
 }
 
-// ===========================
-// HELPERS
-// ===========================
-function setText(id, val) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = val;
-}
+// ============================================================
+// Event Wiring
+// ============================================================
 
-function animateNumber(el, target) {
-  if (!el || isNaN(target)) { if (el) el.textContent = target; return; }
-  const n     = parseInt(target);
-  const dur   = 1800;
-  const start = performance.now();
-  const tick  = (now) => {
-    const p = Math.min((now - start) / dur, 1);
-    const e = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.floor(e * n);
-    if (p < 1) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
+document.addEventListener('DOMContentLoaded', () => {
+  const searchInput = document.getElementById('searchInput');
+  const searchBtn   = document.getElementById('searchBtn');
 
-function setRing(id, percent, label) {
-  const ring = document.getElementById(id);
-  if (!ring) return;
-  const circ = 2 * Math.PI * 52;
-  ring.style.strokeDasharray  = circ;
-  ring.style.strokeDashoffset = circ * (1 - Math.min(percent, 100) / 100);
-}
+  searchBtn.addEventListener('click', () => searchStock(searchInput.value));
+  searchInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') searchStock(searchInput.value);
+  });
 
-function showApiNote(msg) {
-  const el = document.getElementById('apiStatus');
-  if (el) { el.textContent = msg; el.style.display = 'block'; }
-}
-
-// ===========================
-// FILTERS
-// ===========================
-function initFilters() {
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const f = btn.dataset.filter;
-      document.querySelectorAll('.player-card').forEach(c => {
-        c.classList.toggle('hidden', f !== 'all' && c.dataset.pos !== f);
-      });
+  document.querySelectorAll('.suggestion-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      searchInput.value = chip.dataset.ticker;
+      searchStock(chip.dataset.ticker);
     });
   });
-}
 
-function revealCards() {
-  document.querySelectorAll('.player-card, .about-card, .stat-card, .match-item, .stats-bar-item').forEach(el => {
-    el.classList.add('reveal');
-    revealObserver.observe(el);
+  document.getElementById('watchlistBtn').addEventListener('click', () => {
+    if (currentTicker) toggleWatchlist(currentTicker);
   });
-}
 
-// ===========================
-// NAVBAR SCROLL
-// ===========================
-const navbar = document.getElementById('navbar');
-window.addEventListener('scroll', () => {
-  navbar.classList.toggle('scrolled', window.scrollY > 40);
-});
-
-// ===========================
-// MOBILE MENU
-// ===========================
-const hamburger = document.getElementById('hamburger');
-const navLinks  = document.getElementById('navLinks');
-
-hamburger.addEventListener('click', () => {
-  navLinks.classList.toggle('open');
-  const bars   = hamburger.querySelectorAll('span');
-  const isOpen = navLinks.classList.contains('open');
-  bars[0].style.transform = isOpen ? 'rotate(45deg) translate(5px, 5px)' : '';
-  bars[1].style.opacity   = isOpen ? '0' : '1';
-  bars[2].style.transform = isOpen ? 'rotate(-45deg) translate(5px, -5px)' : '';
-});
-
-navLinks.querySelectorAll('a').forEach(link => {
-  link.addEventListener('click', () => {
-    navLinks.classList.remove('open');
-    hamburger.querySelectorAll('span').forEach(s => { s.style.transform = ''; s.style.opacity = ''; });
+  document.getElementById('clearWatchlist').addEventListener('click', () => {
+    watchlist = [];
+    localStorage.setItem('finmetrics_watchlist', JSON.stringify(watchlist));
+    renderWatchlistGrid();
   });
-});
 
-// ===========================
-// SCROLL REVEAL
-// ===========================
-const revealObserver = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) { entry.target.classList.add('visible'); revealObserver.unobserve(entry.target); }
+  document.getElementById('closeError').addEventListener('click', () => hide('errorBanner'));
+
+  // Timeframe buttons
+  document.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (currentTicker) loadChart(currentTicker, btn.dataset.range, btn.dataset.interval);
+    });
   });
-}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
 
-document.querySelectorAll('.about-card, .stat-card').forEach(el => {
-  el.classList.add('reveal');
-  revealObserver.observe(el);
-});
-
-// ===========================
-// JOIN FORM
-// ===========================
-const joinForm    = document.getElementById('joinForm');
-const joinSuccess = document.getElementById('joinSuccess');
-if (joinForm) {
-  joinForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    joinForm.style.opacity    = '0';
-    joinForm.style.transform  = 'scale(0.95)';
-    joinForm.style.transition = '0.3s ease';
-    setTimeout(() => { joinForm.classList.add('hidden'); joinSuccess.classList.remove('hidden'); }, 300);
+  // Financial statement tabs
+  document.querySelectorAll('.fin-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.fin-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      if (!fullData) return;
+      const t = tab.dataset.tab;
+      if (t === 'income')   renderIncomeTable(fullData.incomeStatementHistory?.incomeStatementHistory || []);
+      if (t === 'balance')  renderBalanceTable(fullData.balanceSheetHistory?.balanceSheetStatements || []);
+      if (t === 'cashflow') renderCashFlowTable(fullData.cashflowStatementHistory?.cashflowStatements || []);
+    });
   });
-}
 
-// ===========================
-// ACTIVE NAV
-// ===========================
-const sections    = document.querySelectorAll('section[id]');
-const navAnchors  = document.querySelectorAll('.nav-links a[href^="#"]');
-const activeObserver = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      navAnchors.forEach(a => { a.style.color = ''; a.style.background = ''; });
-      const active = document.querySelector(`.nav-links a[href="#${entry.target.id}"]`);
-      if (active) { active.style.color = 'var(--gold)'; active.style.background = 'rgba(240,192,64,0.08)'; }
+  // Navbar scroll effect
+  window.addEventListener('scroll', () => {
+    document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 50);
+  }, { passive: true });
+
+  // Hamburger menu
+  document.getElementById('hamburger').addEventListener('click', () => {
+    document.getElementById('navLinks').classList.toggle('open');
+  });
+
+  // Theme toggle
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    const html = document.documentElement;
+    const isLight = html.dataset.theme === 'light';
+    html.dataset.theme = isLight ? 'dark' : 'light';
+    document.getElementById('themeIconSun').style.display  = isLight ? '' : 'none';
+    document.getElementById('themeIconMoon').style.display = isLight ? 'none' : '';
+    localStorage.setItem('finmetrics_theme', html.dataset.theme);
+  });
+
+  // Restore saved theme
+  const savedTheme = localStorage.getItem('finmetrics_theme');
+  if (savedTheme) {
+    document.documentElement.dataset.theme = savedTheme;
+    if (savedTheme === 'light') {
+      document.getElementById('themeIconSun').style.display  = 'none';
+      document.getElementById('themeIconMoon').style.display = '';
     }
-  });
-}, { threshold: 0.4 });
-sections.forEach(s => activeObserver.observe(s));
+  }
 
-// ===========================
-// BOOT
-// ===========================
-loadClubData();
+  renderWatchlistGrid();
+});
