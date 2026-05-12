@@ -1,116 +1,83 @@
 'use strict';
 
 // ============================================================
-// Configuration
+// Config — Finnhub API (free: 60 req/min, global stocks)
 // ============================================================
-const YF_BASE   = 'https://query2.finance.yahoo.com';
-const CORS_PROXY = 'https://corsproxy.io/?';
+const FH_BASE = 'https://finnhub.io/api/v1';
 
-let priceChart    = null;
 let currentTicker = '';
 let fullData      = null;
+let priceChart    = null;
 let watchlist     = JSON.parse(localStorage.getItem('finmetrics_watchlist') || '[]');
+let apiKey        = localStorage.getItem('finmetrics_apikey') || '';
 
 // ============================================================
-// API Helpers
+// API
 // ============================================================
 
-async function apiFetch(url) {
-  // Try direct first (Yahoo sometimes allows CORS)
-  try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
-    if (res.ok) {
-      const json = await res.json();
-      if (json && !json.quoteSummary?.error && !json.chart?.error) return json;
-    }
-  } catch (_) { /* CORS or network — fall through */ }
+async function fhFetch(endpoint, params = {}) {
+  if (!apiKey) throw new Error('Enter your free Finnhub API key above to get started.');
 
-  // Proxy fallback
-  const proxied = CORS_PROXY + encodeURIComponent(url);
-  const res = await fetch(proxied, { signal: AbortSignal.timeout(12000) });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const url = new URL(FH_BASE + endpoint);
+  url.searchParams.set('token', apiKey);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+
+  const res = await fetch(url.toString());
+  if (res.status === 401) throw new Error('Invalid API key. Get your free key at finnhub.io and enter it above.');
+  if (res.status === 403) throw new Error('Access denied. This data may require a higher Finnhub plan.');
+  if (res.status === 429) throw new Error('Rate limit hit (60/min on free plan). Wait a moment and try again.');
+  if (!res.ok) throw new Error(`API error: HTTP ${res.status}`);
   return res.json();
 }
 
-async function fetchQuoteSummary(ticker) {
-  const modules = [
-    'price',
-    'summaryDetail',
-    'defaultKeyStatistics',
-    'financialData',
-    'incomeStatementHistory',
-    'balanceSheetHistory',
-    'cashflowStatementHistory',
-  ].join(',');
+const fhProfile    = t         => fhFetch('/stock/profile2',       { symbol: t });
+const fhQuote      = t         => fhFetch('/quote',                { symbol: t });
+const fhMetrics    = t         => fhFetch('/stock/metric',         { symbol: t, metric: 'all' });
+const fhRecs       = t         => fhFetch('/stock/recommendation', { symbol: t });
+const fhTargets    = t         => fhFetch('/stock/price-target',   { symbol: t });
+const fhCandle     = (t,r,f,to)=> fhFetch('/stock/candle',         { symbol: t, resolution: r, from: f, to });
+const fhFinancials = (t, stmt) => fhFetch('/stock/financials',     { symbol: t, statement: stmt, freq: 'annual' });
 
-  const url = `${YF_BASE}/v10/finance/quoteSummary/${ticker}?modules=${modules}&lang=en-US&region=US`;
-  const data = await apiFetch(url);
+// ============================================================
+// Formatters
+// ============================================================
 
-  if (data.quoteSummary?.error) {
-    throw new Error(data.quoteSummary.error.description || 'Unknown error');
-  }
-  if (!data.quoteSummary?.result?.[0]) {
-    throw new Error(`No data found for "${ticker}"`);
-  }
-  return data.quoteSummary.result[0];
+function fmtBig(v) {
+  const n = parseFloat(v);
+  if (v == null || isNaN(n)) return 'N/A';
+  const abs = Math.abs(n), s = n < 0 ? '-' : '';
+  if (abs >= 1e12) return s + (abs / 1e12).toFixed(2) + 'T';
+  if (abs >= 1e9)  return s + (abs / 1e9).toFixed(2)  + 'B';
+  if (abs >= 1e6)  return s + (abs / 1e6).toFixed(2)  + 'M';
+  if (abs >= 1e3)  return s + (abs / 1e3).toFixed(1)  + 'K';
+  return s + abs.toFixed(2);
 }
 
-async function fetchPriceHistory(ticker, range = '1y', interval = '1d') {
-  const url = `${YF_BASE}/v8/finance/chart/${ticker}?interval=${interval}&range=${range}&lang=en-US&region=US`;
-  const data = await apiFetch(url);
+// profile.marketCapitalization and profile.shareOutstanding are in millions
+function fmtMillions(v)  { return fmtCurrency(parseFloat(v) * 1e6); }
+function fmtCurrency(v)  { const s = fmtBig(v); return s === 'N/A' ? 'N/A' : '$' + s; }
+function fmtPrice(v)     { const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : '$' + n.toFixed(2); }
+function fmtRatio(v, d=2){ const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : n.toFixed(d) + 'x'; }
 
-  if (data.chart?.error) throw new Error(data.chart.error.description);
-  if (!data.chart?.result?.[0]) throw new Error('No chart data');
-  return data.chart.result[0];
+// Finnhub margins/ROE/ROA come as %, e.g. 44.13 already means 44.13%
+function fmtPctDirect(v, d=2) {
+  const n = parseFloat(v);
+  return (v == null || isNaN(n)) ? 'N/A' : n.toFixed(d) + '%';
+}
+
+// Growth rates come as decimals, e.g. 0.1286 means 12.86%
+function fmtPctDecimal(v, d=2) {
+  const n = parseFloat(v);
+  return (v == null || isNaN(n)) ? 'N/A' : (n * 100).toFixed(d) + '%';
+}
+
+function fmtDate(v) {
+  if (!v) return 'N/A';
+  return new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
 // ============================================================
-// Format Utilities
-// ============================================================
-
-function fmtBig(num) {
-  if (num == null || isNaN(num)) return 'N/A';
-  const abs = Math.abs(num);
-  const sign = num < 0 ? '-' : '';
-  if (abs >= 1e12) return sign + (abs / 1e12).toFixed(2) + 'T';
-  if (abs >= 1e9)  return sign + (abs / 1e9).toFixed(2)  + 'B';
-  if (abs >= 1e6)  return sign + (abs / 1e6).toFixed(2)  + 'M';
-  if (abs >= 1e3)  return sign + (abs / 1e3).toFixed(1)  + 'K';
-  return sign + abs.toFixed(2);
-}
-
-function fmtCurrency(num) {
-  if (num == null || isNaN(num)) return 'N/A';
-  return '$' + fmtBig(num);
-}
-
-function fmtPct(num, decimals = 2) {
-  if (num == null || isNaN(num)) return 'N/A';
-  return (num * 100).toFixed(decimals) + '%';
-}
-
-function fmtDate(ts) {
-  if (!ts) return 'N/A';
-  return new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-}
-
-// Safely extract .raw or primitive from Yahoo Finance field
-function raw(obj, ...keys) {
-  for (const key of keys) {
-    let val = obj;
-    for (const part of key.split('.')) {
-      if (val == null) { val = null; break; }
-      val = val[part];
-    }
-    if (val == null) continue;
-    if (typeof val === 'object' && val.raw != null) return val.raw;
-    if (typeof val !== 'object') return val;
-  }
-  return null;
-}
-
-// ============================================================
-// DOM Helpers
+// DOM helpers
 // ============================================================
 
 function setText(id, text) {
@@ -125,58 +92,54 @@ function setColored(id, text, positive) {
   el.className = 'kpi-value' + (positive === true ? ' positive' : positive === false ? ' negative' : '');
 }
 
-function show(id) {
-  const el = document.getElementById(id);
-  if (el) el.style.display = '';
-}
-
-function hide(id) {
-  const el = document.getElementById(id);
-  if (el) el.style.display = 'none';
-}
+function show(id) { const el = document.getElementById(id); if (el) el.style.display = ''; }
+function hide(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
 
 // ============================================================
 // Render: Stock Header
 // ============================================================
 
-function renderHeader(data, ticker) {
-  const p = data.price || {};
-  const name      = raw(p, 'longName', 'shortName') || ticker;
-  const exchange  = raw(p, 'exchangeName') || '';
-  const sector    = raw(p, 'sector') || raw(data.summaryProfile, 'sector') || '';
-  const price     = raw(p, 'regularMarketPrice');
-  const change    = raw(p, 'regularMarketChange');
-  const changePct = raw(p, 'regularMarketChangePercent');
+function renderHeader(profile, quote, ticker) {
+  const price  = parseFloat(quote.c);
+  const change = parseFloat(quote.d);
+  const pct    = parseFloat(quote.dp); // already in %, e.g. 0.83
+  const isUp   = change >= 0;
 
-  setText('stockName', name);
+  setText('stockName',        profile.name || ticker);
   setText('stockTickerBadge', ticker);
-  setText('stockExchange', exchange);
-  setText('stockSector', sector || 'Equity');
-  setText('stockLogoText', ticker.slice(0, 2));
+  setText('stockExchange',    profile.exchange || '');
+  setText('stockSector',      profile.finnhubIndustry || 'Equity');
 
-  if (price != null) {
-    setText('currentPrice', '$' + price.toFixed(2));
-
-    const up = change >= 0;
-    const changeEl = document.getElementById('priceChange');
-    if (changeEl) changeEl.className = 'price-change ' + (up ? 'positive' : 'negative');
-
-    setText('changeAmount', (up ? '+' : '') + '$' + (change ?? 0).toFixed(2));
-
-    const badge = document.getElementById('changeBadge');
-    if (badge) {
-      badge.textContent = (up ? '+' : '') + (changePct != null ? fmtPct(changePct) : '0.00%');
-      badge.className = 'change-badge ' + (up ? 'positive' : 'negative');
+  // Company logo from Finnhub
+  const logoContainer = document.getElementById('stockLogo');
+  if (logoContainer) {
+    if (profile.logo) {
+      logoContainer.innerHTML = `<img src="${profile.logo}" alt="${ticker}"
+        style="width:36px;height:36px;object-fit:contain;border-radius:6px;"
+        onerror="this.outerHTML='<span id=stockLogoText>${ticker.slice(0,2)}</span>'" />`;
+    } else {
+      logoContainer.innerHTML = `<span id="stockLogoText">${ticker.slice(0, 2)}</span>`;
     }
   }
 
-  const marketState = raw(p, 'marketState');
-  setText('priceDate', marketState === 'REGULAR' ? 'Market Open' : 'Market Closed · ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric' }));
+  setText('currentPrice', isNaN(price) ? 'N/A' : '$' + price.toFixed(2));
+
+  const changeEl = document.getElementById('priceChange');
+  if (changeEl) changeEl.className = 'price-change ' + (isUp ? 'positive' : 'negative');
+
+  setText('changeAmount', (isUp ? '+' : '') + (isNaN(change) ? '0.00' : '$' + change.toFixed(2)));
+
+  const badge = document.getElementById('changeBadge');
+  if (badge) {
+    badge.textContent = (isUp ? '+' : '') + (isNaN(pct) ? '0.00' : pct.toFixed(2)) + '%';
+    badge.className   = 'change-badge ' + (isUp ? 'positive' : 'negative');
+  }
+
+  setText('priceDate', 'Real-time · ' + (profile.currency || 'USD'));
 
   const wlBtn = document.getElementById('watchlistBtn');
   if (wlBtn) wlBtn.dataset.ticker = ticker;
   updateWatchlistBtn(ticker);
-
   show('stockHeader');
 }
 
@@ -184,21 +147,26 @@ function renderHeader(data, ticker) {
 // Render: Quick Stats
 // ============================================================
 
-function renderQuickStats(data) {
-  const fd = data.financialData      || {};
-  const sd = data.summaryDetail      || {};
-  const ks = data.defaultKeyStatistics || {};
+function renderQuickStats(profile, quote, metrics) {
+  const m      = metrics.metric || {};
+  const shares = parseFloat(profile.shareOutstanding); // millions
 
-  setText('statMarketCap',  fmtCurrency(raw(sd, 'marketCap')));
-  setText('statPE',         raw(sd, 'trailingPE') != null ? parseFloat(raw(sd, 'trailingPE')).toFixed(2) + 'x' : 'N/A');
-  setText('statEPS',        raw(ks, 'trailingEps') != null ? '$' + parseFloat(raw(ks, 'trailingEps')).toFixed(2) : 'N/A');
-  setText('statRevenue',    fmtCurrency(raw(fd, 'totalRevenue')));
-  setText('statNetIncome',  fmtCurrency(raw(ks, 'netIncomeToCommon')));
-  setText('statFCF',        fmtCurrency(raw(fd, 'freeCashflow')));
-  const dy = raw(sd, 'dividendYield');
-  setText('statDivYield',   dy != null ? fmtPct(dy) : 'N/A');
-  const beta = raw(sd, 'beta');
-  setText('statBeta',       beta != null ? parseFloat(beta).toFixed(2) : 'N/A');
+  setText('statMarketCap', fmtMillions(profile.marketCapitalization));
+  setText('statPE',        fmtRatio(m.peBasicExclExtraTTM || m.peNormalizedAnnual));
+  setText('statEPS',       fmtPrice(m.epsNormalizedAnnual || m.epsAnnual));
+
+  const rev = parseFloat(m.revenuePerShareAnnual) * shares * 1e6;
+  setText('statRevenue',   isNaN(rev) ? 'N/A' : fmtCurrency(rev));
+
+  const ni = parseFloat(m.epsAnnual) * shares * 1e6;
+  setText('statNetIncome', isNaN(ni) ? 'N/A' : fmtCurrency(ni));
+
+  const fcf = parseFloat(m.pfcfShareAnnual || m.cashFlowPerShareAnnual) * shares * 1e6;
+  setText('statFCF', isNaN(fcf) ? 'N/A' : fmtCurrency(fcf));
+
+  setText('statDivYield', m.dividendYieldIndicatedAnnual != null
+    ? fmtPctDirect(m.dividendYieldIndicatedAnnual) : 'N/A');
+  setText('statBeta', m.beta != null ? parseFloat(m.beta).toFixed(2) : 'N/A');
 
   show('quickStats');
 }
@@ -207,259 +175,153 @@ function renderQuickStats(data) {
 // Render: KPI Cards
 // ============================================================
 
-function renderKPIs(data) {
-  const fd = data.financialData        || {};
-  const sd = data.summaryDetail        || {};
-  const ks = data.defaultKeyStatistics || {};
-  const pr = data.price                || {};
+function renderKPIs(profile, quote, metrics, recs, targets) {
+  const m        = metrics.metric || {};
+  const shares   = parseFloat(profile.shareOutstanding);
+  const curPrice = parseFloat(quote.c);
 
-  // --- Valuation ---
-  const pe = raw(sd, 'trailingPE');
-  setText('kpiPE', pe != null ? parseFloat(pe).toFixed(2) + 'x' : 'N/A');
+  // -- Valuation --
+  setText('kpiPE',        fmtRatio(m.peBasicExclExtraTTM || m.peNormalizedAnnual));
+  setText('kpiForwardPE', 'N/A');
+  setText('kpiPEG',       'N/A');
+  setText('kpiPB',        fmtRatio(m.ptbvAnnual || m.ptbvQuarterly));
+  setText('kpiPS',        fmtRatio(m.psTTM || m.psAnnual));
+  setText('kpiEVEBITDA',  'N/A');
+  setText('kpiEV',        fmtMillions(profile.marketCapitalization)); // approx
+  setText('kpiBookValue', fmtPrice(m.bookValuePerShareAnnual || m.bookValuePerShareQuarterly));
 
-  const fpe = raw(sd, 'forwardPE');
-  setText('kpiForwardPE', fpe != null ? parseFloat(fpe).toFixed(2) + 'x' : 'N/A');
-
-  const peg = raw(ks, 'pegRatio');
-  setText('kpiPEG', peg != null ? parseFloat(peg).toFixed(2) + 'x' : 'N/A');
-
-  const pb = raw(ks, 'priceToBook');
-  setText('kpiPB', pb != null ? parseFloat(pb).toFixed(2) + 'x' : 'N/A');
-
-  const ps = raw(ks, 'enterpriseToRevenue');
-  setText('kpiPS', ps != null ? parseFloat(ps).toFixed(2) + 'x' : 'N/A');
-
-  const eveb = raw(ks, 'enterpriseToEbitda');
-  setText('kpiEVEBITDA', eveb != null ? parseFloat(eveb).toFixed(2) + 'x' : 'N/A');
-
-  setText('kpiEV', fmtCurrency(raw(ks, 'enterpriseValue')));
-
-  const bv = raw(ks, 'bookValue');
-  setText('kpiBookValue', bv != null ? '$' + parseFloat(bv).toFixed(2) : 'N/A');
-
-  // --- Profitability ---
-  const margin = (id, val) => {
-    if (val == null) { setText(id, 'N/A'); return; }
-    setColored(id, fmtPct(val), val > 0);
+  // -- Profitability --
+  const setMargin = (id, val) => {
+    const n = parseFloat(val);
+    if (val == null || isNaN(n)) { setText(id, 'N/A'); return; }
+    setColored(id, n.toFixed(2) + '%', n > 0);
   };
 
-  margin('kpiGrossMargin',   raw(fd, 'grossMargins'));
-  margin('kpiOpMargin',      raw(fd, 'operatingMargins'));
-  margin('kpiNetMargin',     raw(fd, 'profitMargins'));
-  margin('kpiEBITDAMargin',  raw(fd, 'ebitdaMargins'));
-  margin('kpiROE',           raw(fd, 'returnOnEquity'));
-  margin('kpiROA',           raw(fd, 'returnOnAssets'));
+  setMargin('kpiGrossMargin',   m.grossMarginTTM    || m.grossMarginAnnual);
+  setMargin('kpiOpMargin',      m.operatingMarginTTM|| m.operatingMarginAnnual);
+  setMargin('kpiNetMargin',     m.netProfitMarginTTM|| m.netProfitMarginAnnual);
+  setMargin('kpiEBITDAMargin',  m.ebitdaMarginAnnual);
+  setMargin('kpiROE',           m.roeTTM   || m.roeRfy);
+  setMargin('kpiROA',           m.roaTTM   || m.roaRfy);
+  setMargin('kpiROIC',          m.roiTTM   || m.roicRfy);
+  setText('kpiEBITDA', 'N/A');
 
-  const ebitda = raw(fd, 'ebitda');
-  setText('kpiEBITDA', fmtCurrency(ebitda));
+  // -- Financial Health --
+  const rev = parseFloat(m.revenuePerShareAnnual) * shares * 1e6;
+  setText('kpiRevenue', isNaN(rev) ? 'N/A' : fmtCurrency(rev));
 
-  const roic = raw(fd, 'returnOnCapital');
-  if (roic != null) {
-    setColored('kpiROIC', fmtPct(roic), roic > 0);
+  const ni = parseFloat(m.epsAnnual) * shares * 1e6;
+  if (!isNaN(ni)) setColored('kpiNetIncome', fmtCurrency(ni), ni > 0);
+  else setText('kpiNetIncome', 'N/A');
+
+  setText('kpiTotalCash',  'N/A');
+
+  const debt = parseFloat(m.totalDebtAnnual || m.totalDebtMRQ);
+  setText('kpiTotalDebt', isNaN(debt) ? 'N/A' : fmtCurrency(debt));
+
+  const de = parseFloat(m['totalDebt/totalEquityAnnual'] || m['totalDebt/totalEquityQuarterly']);
+  setText('kpiDebtEquity', isNaN(de) ? 'N/A' : (de / 100).toFixed(2) + 'x');
+
+  const cr = parseFloat(m.currentRatioAnnual || m.currentRatioQuarterly);
+  setText('kpiCurrentRatio', isNaN(cr) ? 'N/A' : cr.toFixed(2) + 'x');
+
+  const qr = parseFloat(m.quickRatioAnnual || m.quickRatioQuarterly);
+  setText('kpiQuickRatio', isNaN(qr) ? 'N/A' : qr.toFixed(2) + 'x');
+
+  const fcf = parseFloat(m.pfcfShareAnnual || m.cashFlowPerShareAnnual) * shares * 1e6;
+  if (!isNaN(fcf)) setColored('kpiFCF', fmtCurrency(fcf), fcf > 0);
+  else setText('kpiFCF', 'N/A');
+
+  // -- Growth & Dividends --
+  const revG = parseFloat(m.revenueGrowthTTMYoy || m.revenueGrowthQuarterlyYoy);
+  const epsG = parseFloat(m.epsGrowthTTMYoy     || m.epsGrowthQuarterlyYoy);
+
+  if (!isNaN(revG)) setColored('kpiRevenueGrowth',  (revG > 0 ? '+' : '') + fmtPctDecimal(revG), revG > 0);
+  else setText('kpiRevenueGrowth', 'N/A');
+
+  if (!isNaN(epsG)) setColored('kpiEarningsGrowth', (epsG > 0 ? '+' : '') + fmtPctDecimal(epsG), epsG > 0);
+  else setText('kpiEarningsGrowth', 'N/A');
+
+  setText('kpiEPS',        fmtPrice(m.epsAnnual || m.epsNormalizedAnnual));
+  setText('kpiForwardEPS', 'N/A');
+  setText('kpiDivYield',   m.dividendYieldIndicatedAnnual != null
+    ? fmtPctDirect(m.dividendYieldIndicatedAnnual) : 'N/A');
+  setText('kpiDivRate',    fmtPrice(m.dividendPerShareAnnual));
+  setText('kpiPayoutRatio', m.payoutRatioAnnual != null ? fmtPctDirect(m.payoutRatioAnnual) : 'N/A');
+  setText('kpiExDivDate',  'N/A');
+
+  // -- Market Data --
+  setText('kpi52High',    fmtPrice(m['52WeekHigh']));
+  setText('kpi52Low',     fmtPrice(m['52WeekLow']));
+  setText('kpi50MA',      'N/A');
+  setText('kpi200MA',     'N/A');
+  setText('kpiVolume',    fmtBig(parseFloat(quote.v)));
+  setText('kpiAvgVolume', m['10DayAverageTradingVolume'] != null
+    ? fmtBig(parseFloat(m['10DayAverageTradingVolume']) * 1e6) : 'N/A');
+  setText('kpiShares',    fmtBig(shares * 1e6));
+  setText('kpiFloat',     'N/A');
+
+  // -- Analyst Consensus --
+  const latestRec = Array.isArray(recs) && recs.length ? recs[0] : null;
+  if (latestRec) {
+    const sb    = latestRec.strongBuy  || 0;
+    const b     = latestRec.buy        || 0;
+    const h     = latestRec.hold       || 0;
+    const s     = latestRec.sell       || 0;
+    const ss    = latestRec.strongSell || 0;
+    const total = sb + b + h + s + ss;
+    const buyPct = total ? (sb + b) / total : 0;
+
+    let rec = 'Hold';
+    if (buyPct > 0.6) rec = buyPct > 0.8 ? 'Strong Buy' : 'Buy';
+    if ((s + ss) / total > 0.4) rec = 'Sell';
+
+    const recEl = document.getElementById('kpiRecommendation');
+    if (recEl) {
+      recEl.textContent = rec;
+      recEl.className   = 'kpi-value' + (rec.includes('Buy') ? ' positive' : rec.includes('Sell') ? ' negative' : '');
+    }
+    setText('kpiRating',       `${sb + b} Buy · ${h} Hold · ${s + ss} Sell`);
+    setText('kpiAnalystCount', total.toString());
   } else {
-    setText('kpiROIC', 'N/A');
+    setText('kpiRecommendation', 'N/A');
+    setText('kpiRating',         'N/A');
+    setText('kpiAnalystCount',   'N/A');
   }
 
-  // --- Financial Health ---
-  setText('kpiRevenue', fmtCurrency(raw(fd, 'totalRevenue')));
-
-  const ni = raw(ks, 'netIncomeToCommon');
-  if (ni != null) { setColored('kpiNetIncome', fmtCurrency(ni), ni > 0); } else { setText('kpiNetIncome', 'N/A'); }
-
-  setText('kpiTotalCash', fmtCurrency(raw(fd, 'totalCash')));
-  setText('kpiTotalDebt', fmtCurrency(raw(fd, 'totalDebt')));
-
-  const de = raw(fd, 'debtToEquity');
-  setText('kpiDebtEquity', de != null ? (de / 100).toFixed(2) + 'x' : 'N/A');
-
-  const cr = raw(fd, 'currentRatio');
-  setText('kpiCurrentRatio', cr != null ? parseFloat(cr).toFixed(2) + 'x' : 'N/A');
-
-  const qr = raw(fd, 'quickRatio');
-  setText('kpiQuickRatio', qr != null ? parseFloat(qr).toFixed(2) + 'x' : 'N/A');
-
-  const fcf = raw(fd, 'freeCashflow');
-  if (fcf != null) { setColored('kpiFCF', fmtCurrency(fcf), fcf > 0); } else { setText('kpiFCF', 'N/A'); }
-
-  // --- Growth & Dividends ---
-  const growth = (id, val) => {
-    if (val == null) { setText(id, 'N/A'); return; }
-    setColored(id, (val > 0 ? '+' : '') + fmtPct(val), val > 0);
-  };
-
-  growth('kpiRevenueGrowth',  raw(fd, 'revenueGrowth'));
-  growth('kpiEarningsGrowth', raw(fd, 'earningsGrowth'));
-
-  const eps = raw(ks, 'trailingEps');
-  setText('kpiEPS', eps != null ? '$' + parseFloat(eps).toFixed(2) : 'N/A');
-
-  const fwEPS = raw(ks, 'forwardEps');
-  setText('kpiForwardEPS', fwEPS != null ? '$' + parseFloat(fwEPS).toFixed(2) : 'N/A');
-
-  const dy = raw(sd, 'dividendYield');
-  setText('kpiDivYield', dy != null ? fmtPct(dy) : 'N/A');
-
-  const dr = raw(sd, 'dividendRate');
-  setText('kpiDivRate', dr != null ? '$' + parseFloat(dr).toFixed(2) : 'N/A');
-
-  const payout = raw(sd, 'payoutRatio');
-  setText('kpiPayoutRatio', payout != null ? fmtPct(payout) : 'N/A');
-
-  setText('kpiExDivDate', fmtDate(raw(sd, 'exDividendDate')));
-
-  // --- Market Data ---
-  const h52 = raw(sd, 'fiftyTwoWeekHigh');
-  const l52 = raw(sd, 'fiftyTwoWeekLow');
-  setText('kpi52High', h52 != null ? '$' + parseFloat(h52).toFixed(2) : 'N/A');
-  setText('kpi52Low',  l52 != null ? '$' + parseFloat(l52).toFixed(2) : 'N/A');
-
-  const ma50  = raw(sd, 'fiftyDayAverage');
-  const ma200 = raw(sd, 'twoHundredDayAverage');
-  setText('kpi50MA',  ma50  != null ? '$' + parseFloat(ma50).toFixed(2)  : 'N/A');
-  setText('kpi200MA', ma200 != null ? '$' + parseFloat(ma200).toFixed(2) : 'N/A');
-
-  setText('kpiVolume',    fmtBig(raw(pr, 'regularMarketVolume')));
-  setText('kpiAvgVolume', fmtBig(raw(sd, 'averageVolume10days')));
-  setText('kpiShares',    fmtBig(raw(ks, 'sharesOutstanding')));
-  setText('kpiFloat',     fmtBig(raw(ks, 'floatShares')));
-
-  // --- Analyst ---
-  const curPrice   = raw(pr, 'regularMarketPrice');
-  const targetMean = raw(fd, 'targetMeanPrice');
-  const targetHigh = raw(fd, 'targetHighPrice');
-  const targetLow  = raw(fd, 'targetLowPrice');
-  const recKey     = raw(fd, 'recommendationKey') || '';
-  const rating     = raw(fd, 'recommendationMean');
-  const numAn      = raw(fd, 'numberOfAnalystOpinions');
-  const shortRatio = raw(ks, 'shortRatio');
-
-  const recDisplay = recKey
-    ? recKey.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-    : 'N/A';
-
-  const recEl = document.getElementById('kpiRecommendation');
-  if (recEl) {
-    recEl.textContent = recDisplay;
-    const isBuy  = recKey.includes('buy');
-    const isSell = recKey.includes('sell');
-    recEl.className = 'kpi-value' + (isBuy ? ' positive' : isSell ? ' negative' : '');
-  }
-
-  setText('kpiRating',      rating != null ? parseFloat(rating).toFixed(1) + ' / 5' : 'N/A');
-  setText('kpiTargetPrice', targetMean != null ? '$' + parseFloat(targetMean).toFixed(2) : 'N/A');
-  setText('kpiTargetHigh',  targetHigh != null ? '$' + parseFloat(targetHigh).toFixed(2) : 'N/A');
-  setText('kpiTargetLow',   targetLow  != null ? '$' + parseFloat(targetLow).toFixed(2)  : 'N/A');
-  setText('kpiAnalystCount', numAn != null ? numAn.toString() : 'N/A');
-  setText('kpiShortRatio',  shortRatio != null ? parseFloat(shortRatio).toFixed(2) : 'N/A');
-
-  if (targetMean != null && curPrice != null) {
-    const upside = (targetMean - curPrice) / curPrice;
-    setColored('kpiUpside', (upside > 0 ? '+' : '') + fmtPct(upside), upside > 0);
+  if (targets?.targetMean) {
+    const mean   = parseFloat(targets.targetMean);
+    const upside = (mean - curPrice) / curPrice;
+    setText('kpiTargetPrice', fmtPrice(mean));
+    setText('kpiTargetHigh',  fmtPrice(targets.targetHigh));
+    setText('kpiTargetLow',   fmtPrice(targets.targetLow));
+    setColored('kpiUpside', (upside > 0 ? '+' : '') + fmtPctDecimal(upside), upside > 0);
   } else {
-    setText('kpiUpside', 'N/A');
+    ['kpiTargetPrice', 'kpiTargetHigh', 'kpiTargetLow', 'kpiUpside'].forEach(id => setText(id, 'N/A'));
   }
+  setText('kpiShortRatio', 'N/A');
 
   show('kpis');
-}
-
-// ============================================================
-// Render: Financial Statements
-// ============================================================
-
-function renderFinancials(data) {
-  fullData = data;
-  renderIncomeTable(data.incomeStatementHistory?.incomeStatementHistory || []);
-  show('financials');
-}
-
-function buildFinTable(fields, statements) {
-  if (!statements.length) return '<p class="no-data">No data available.</p>';
-  const years = statements.slice(0, 4).reverse();
-  const head = years.map(s => {
-    const ts = s.endDate?.raw ?? s.endDate;
-    return `<th>${ts ? new Date(ts * 1000).getFullYear() : '—'}</th>`;
-  }).join('');
-
-  const rows = fields.map(f => {
-    const cells = years.map(s => {
-      const val = s[f.key]?.raw ?? s[f.key];
-      if (val == null) return '<td class="fin-value">N/A</td>';
-      const cls = f.colored ? (val > 0 ? ' positive' : val < 0 ? ' negative' : '') : '';
-      return `<td class="fin-value${cls}">${fmtCurrency(val)}</td>`;
-    }).join('');
-    return `<tr><td class="fin-label">${f.label}</td>${cells}</tr>`;
-  }).join('');
-
-  return `<div class="fin-table-wrapper">
-    <table class="fin-table">
-      <thead><tr><th>Metric</th>${head}</tr></thead>
-      <tbody>${rows}</tbody>
-    </table>
-  </div>`;
-}
-
-function renderIncomeTable(statements) {
-  const fields = [
-    { key: 'totalRevenue',            label: 'Total Revenue' },
-    { key: 'grossProfit',             label: 'Gross Profit',       colored: true },
-    { key: 'totalOperatingExpenses',  label: 'Operating Expenses', colored: false },
-    { key: 'ebit',                    label: 'EBIT',               colored: true },
-    { key: 'netIncome',               label: 'Net Income',         colored: true },
-    { key: 'researchDevelopment',     label: 'R&D Expenses' },
-  ];
-  document.getElementById('finContent').innerHTML = buildFinTable(fields, statements);
-}
-
-function renderBalanceTable(statements) {
-  const fields = [
-    { key: 'totalAssets',             label: 'Total Assets' },
-    { key: 'totalCurrentAssets',      label: 'Current Assets' },
-    { key: 'cash',                    label: 'Cash & Equivalents' },
-    { key: 'totalLiab',              label: 'Total Liabilities' },
-    { key: 'totalCurrentLiabilities', label: 'Current Liabilities' },
-    { key: 'longTermDebt',           label: 'Long-Term Debt' },
-    { key: 'totalStockholderEquity', label: "Stockholders' Equity", colored: true },
-  ];
-  document.getElementById('finContent').innerHTML = buildFinTable(fields, statements);
-}
-
-function renderCashFlowTable(statements) {
-  const processed = statements.map(s => {
-    const cfo   = s.totalCashFromOperatingActivities?.raw ?? s.totalCashFromOperatingActivities ?? 0;
-    const capex = s.capitalExpenditures?.raw ?? s.capitalExpenditures ?? 0;
-    return { ...s, freeCashFlow: { raw: cfo + capex } }; // capex is negative in YF
-  });
-
-  const fields = [
-    { key: 'totalCashFromOperatingActivities', label: 'Operating Cash Flow', colored: true },
-    { key: 'capitalExpenditures',              label: 'Capital Expenditures' },
-    { key: 'freeCashFlow',                     label: 'Free Cash Flow',      colored: true },
-    { key: 'totalCashFromInvestingActivities', label: 'Investing Activities' },
-    { key: 'totalCashFromFinancingActivities', label: 'Financing Activities' },
-    { key: 'dividendsPaid',                   label: 'Dividends Paid' },
-  ];
-  document.getElementById('finContent').innerHTML = buildFinTable(fields, processed);
 }
 
 // ============================================================
 // Render: Price Chart
 // ============================================================
 
-function renderChart(chartData) {
-  const timestamps = chartData.timestamp || [];
-  const closes     = chartData.indicators?.quote?.[0]?.close || [];
+function renderChart(candle) {
+  if (candle.s !== 'ok' || !candle.t?.length) return;
 
-  const labels = timestamps.map(ts =>
+  const labels = candle.t.map(ts =>
     new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   );
-  const prices = closes.map(v => v != null ? +v.toFixed(2) : null);
+  const prices = candle.c.map(v => v != null ? +parseFloat(v).toFixed(2) : null);
 
   if (priceChart) { priceChart.destroy(); priceChart = null; }
 
-  const isUp = prices.length >= 2 && (prices[prices.length - 1] ?? 0) >= (prices[0] ?? 0);
+  const isUp      = prices.length >= 2 && (prices[prices.length - 1] ?? 0) >= (prices[0] ?? 0);
   const lineColor = isUp ? '#10b981' : '#ef4444';
 
-  const ctx = document.getElementById('priceChart').getContext('2d');
+  const ctx  = document.getElementById('priceChart').getContext('2d');
   const grad = ctx.createLinearGradient(0, 0, 0, 320);
   grad.addColorStop(0, isUp ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)');
   grad.addColorStop(1, 'rgba(0,0,0,0)');
@@ -495,9 +357,7 @@ function renderChart(chartData) {
           titleColor: '#8892a4',
           bodyColor: '#f0f4ff',
           padding: 10,
-          callbacks: {
-            label: ctx => ' $' + (ctx.parsed.y?.toFixed(2) ?? '—'),
-          },
+          callbacks: { label: c => ' $' + (c.parsed.y?.toFixed(2) ?? '—') },
         },
       },
       scales: {
@@ -508,32 +368,102 @@ function renderChart(chartData) {
         y: {
           position: 'right',
           grid: { color: 'rgba(255,255,255,0.05)' },
-          ticks: {
-            color: '#8892a4',
-            font: { size: 11 },
-            callback: v => '$' + v.toFixed(0),
-          },
+          ticks: { color: '#8892a4', font: { size: 11 }, callback: v => '$' + v.toFixed(0) },
         },
       },
     },
   });
 }
 
-async function loadChart(ticker, range, interval) {
+// resolution and days per timeframe
+const TF_MAP = {
+  '5d':  ['30', 5],
+  '1mo': ['D',  30],
+  '3mo': ['D',  90],
+  '6mo': ['D',  180],
+  '1y':  ['D',  365],
+  '5y':  ['W',  5 * 365],
+};
+
+async function loadChart(ticker, range) {
+  const [resolution, days] = TF_MAP[range] || ['D', 365];
+  const to   = Math.floor(Date.now() / 1000);
+  const from = to - days * 24 * 60 * 60;
   try {
-    const chartData = await fetchPriceHistory(ticker, range, interval);
-    renderChart(chartData);
+    const candle = await fhCandle(ticker, resolution, from, to);
+    renderChart(candle);
   } catch (e) {
-    console.warn('Chart load failed:', e.message);
+    console.warn('Chart error:', e.message);
   }
 }
+
+// ============================================================
+// Render: Financial Statements (lazy-loaded per tab)
+// ============================================================
+
+function buildFinTable(fields, reports) {
+  if (!reports?.length) {
+    return '<p style="padding:20px;color:var(--text-muted)">No annual data available for this ticker.</p>';
+  }
+  const years = reports.slice(0, 4).reverse();
+  const head  = years.map(r => `<th>${(r.period || '').slice(0, 4)}</th>`).join('');
+  const rows  = fields.map(f => {
+    const cells = years.map(r => {
+      const v = r[f.key];
+      if (v == null || v === '') return '<td class="fin-value">N/A</td>';
+      const n = parseFloat(v);
+      const cls = f.colored ? (n > 0 ? ' positive' : n < 0 ? ' negative' : '') : '';
+      return `<td class="fin-value${cls}">${fmtCurrency(v)}</td>`;
+    }).join('');
+    return `<tr><td class="fin-label">${f.label}</td>${cells}</tr>`;
+  }).join('');
+
+  return `<div class="fin-table-wrapper"><table class="fin-table">
+    <thead><tr><th>Metric</th>${head}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
+async function loadAndRenderTab(stmt, fields) {
+  if (!fullData.financials) fullData.financials = {};
+  if (!fullData.financials[stmt]) {
+    const res = await fhFinancials(currentTicker, stmt);
+    fullData.financials[stmt] = res?.financials || [];
+  }
+  document.getElementById('finContent').innerHTML = buildFinTable(fields, fullData.financials[stmt]);
+}
+
+const INCOME_FIELDS = [
+  { key: 'totalRevenue',        label: 'Total Revenue' },
+  { key: 'grossProfit',         label: 'Gross Profit',     colored: true },
+  { key: 'operatingIncome',     label: 'Operating Income', colored: true },
+  { key: 'netIncome',           label: 'Net Income',       colored: true },
+  { key: 'ebitda',              label: 'EBITDA',           colored: true },
+  { key: 'researchDevelopment', label: 'R&D Expenses' },
+];
+const BALANCE_FIELDS = [
+  { key: 'totalAssets',             label: 'Total Assets' },
+  { key: 'totalCurrentAssets',      label: 'Current Assets' },
+  { key: 'cash',                    label: 'Cash & Equivalents' },
+  { key: 'totalLiab',              label: 'Total Liabilities' },
+  { key: 'totalCurrentLiabilities', label: 'Current Liabilities' },
+  { key: 'longTermDebt',           label: 'Long-Term Debt' },
+  { key: 'totalStockholderEquity', label: "Stockholders' Equity", colored: true },
+];
+const CASHFLOW_FIELDS = [
+  { key: 'totalCashFromOperatingActivities', label: 'Operating Cash Flow', colored: true },
+  { key: 'capitalExpenditures',              label: 'Capital Expenditures' },
+  { key: 'totalCashFromInvestingActivities', label: 'Investing Activities' },
+  { key: 'totalCashFromFinancingActivities', label: 'Financing Activities' },
+  { key: 'dividendsPaid',                   label: 'Dividends Paid' },
+];
 
 // ============================================================
 // Watchlist
 // ============================================================
 
 function updateWatchlistBtn(ticker) {
-  const btn = document.getElementById('watchlistBtn');
+  const btn    = document.getElementById('watchlistBtn');
   if (!btn) return;
   const inList = watchlist.includes(ticker);
   btn.innerHTML = inList
@@ -544,8 +474,7 @@ function updateWatchlistBtn(ticker) {
 
 function toggleWatchlist(ticker) {
   const idx = watchlist.indexOf(ticker);
-  if (idx === -1) watchlist.push(ticker);
-  else watchlist.splice(idx, 1);
+  if (idx === -1) watchlist.push(ticker); else watchlist.splice(idx, 1);
   localStorage.setItem('finmetrics_watchlist', JSON.stringify(watchlist));
   updateWatchlistBtn(ticker);
   renderWatchlistGrid();
@@ -554,26 +483,16 @@ function toggleWatchlist(ticker) {
 function renderWatchlistGrid() {
   const grid  = document.getElementById('watchlistGrid');
   const empty = document.getElementById('watchlistEmpty');
-
   grid.querySelectorAll('.watchlist-item').forEach(el => el.remove());
-
-  if (!watchlist.length) {
-    empty.style.display = '';
-    return;
-  }
+  if (!watchlist.length) { empty.style.display = ''; return; }
   empty.style.display = 'none';
-
   watchlist.forEach(ticker => {
     const item = document.createElement('div');
     item.className = 'watchlist-item';
-    item.innerHTML = `
-      <span class="watchlist-ticker">${ticker}</span>
-      <button class="watchlist-remove" title="Remove">×</button>
-    `;
+    item.innerHTML = `<span class="watchlist-ticker">${ticker}</span><button class="watchlist-remove">×</button>`;
     item.querySelector('.watchlist-ticker').addEventListener('click', () => searchStock(ticker));
     item.querySelector('.watchlist-remove').addEventListener('click', e => {
-      e.stopPropagation();
-      toggleWatchlist(ticker);
+      e.stopPropagation(); toggleWatchlist(ticker);
     });
     grid.appendChild(item);
   });
@@ -587,7 +506,17 @@ async function searchStock(ticker) {
   ticker = ticker.trim().toUpperCase();
   if (!ticker) return;
 
+  if (!apiKey) {
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorMessage').textContent =
+      'Please enter your free Finnhub API key above. Register at finnhub.io — takes 30 seconds, no credit card.';
+    if (banner) banner.style.display = 'flex';
+    document.querySelector('.apikey-box')?.scrollIntoView({ behavior: 'smooth' });
+    return;
+  }
+
   currentTicker = ticker;
+  fullData      = {};
 
   show('loadingOverlay');
   hide('errorBanner');
@@ -596,27 +525,42 @@ async function searchStock(ticker) {
   hide('quickStats');
   hide('kpis');
   hide('financials');
+  document.querySelectorAll('.fin-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
 
   try {
-    const [summaryData, chartData] = await Promise.allSettled([
-      fetchQuoteSummary(ticker),
-      fetchPriceHistory(ticker, '1y', '1d'),
+    const now  = Math.floor(Date.now() / 1000);
+    const from = now - 365 * 24 * 60 * 60;
+
+    const [profile, quote, metrics, recs, targets, candle] = await Promise.all([
+      fhProfile(ticker),
+      fhQuote(ticker),
+      fhMetrics(ticker),
+      fhRecs(ticker).catch(() => []),
+      fhTargets(ticker).catch(() => ({})),
+      fhCandle(ticker, 'D', from, now).catch(() => ({ s: 'no_data' })),
     ]);
 
-    if (summaryData.status === 'rejected') {
-      throw summaryData.reason;
+    if (!profile.name && !profile.ticker) {
+      throw new Error(`"${ticker}" not found. Please check the ticker symbol.`);
     }
 
-    const data = summaryData.value;
+    fullData = { profile, quote, metrics, recs, targets };
 
-    renderHeader(data, ticker);
-    renderQuickStats(data);
-    renderKPIs(data);
-    renderFinancials(data);
+    renderHeader(profile, quote, ticker);
+    renderQuickStats(profile, quote, metrics);
+    renderKPIs(profile, quote, metrics, recs, targets);
 
-    if (chartData.status === 'fulfilled') {
-      renderChart(chartData.value);
-      show('chartSection');
+    if (candle.s === 'ok') { renderChart(candle); show('chartSection'); }
+
+    // Load income statement lazily
+    show('financials');
+    document.getElementById('finContent').innerHTML =
+      '<p style="padding:20px;color:var(--text-muted)">Loading...</p>';
+    try {
+      await loadAndRenderTab('ic', INCOME_FIELDS);
+    } catch (_) {
+      document.getElementById('finContent').innerHTML =
+        '<p style="padding:20px;color:var(--text-muted)">Financial statements unavailable for this ticker.</p>';
     }
 
     document.getElementById('stockHeader')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -624,12 +568,27 @@ async function searchStock(ticker) {
   } catch (err) {
     console.error('searchStock error:', err);
     const banner = document.getElementById('errorBanner');
-    document.getElementById('errorMessage').textContent =
-      `Could not fetch data for "${ticker}". ${err.message || 'Please check the ticker and try again.'}`;
+    document.getElementById('errorMessage').textContent = err.message || 'An unexpected error occurred.';
     if (banner) banner.style.display = 'flex';
     banner?.scrollIntoView({ behavior: 'smooth' });
   } finally {
     hide('loadingOverlay');
+  }
+}
+
+// ============================================================
+// API Key UI
+// ============================================================
+
+function updateApiKeyStatus() {
+  const status = document.getElementById('apiKeyStatus');
+  if (!status) return;
+  if (apiKey) {
+    status.innerHTML = `Key active: <strong>${apiKey.slice(0, 6)}****</strong> — search any stock globally.`;
+    status.className = 'apikey-saved';
+  } else {
+    status.innerHTML = 'No key set — enter your free Finnhub key to search any stock.';
+    status.className = '';
   }
 }
 
@@ -639,12 +598,9 @@ async function searchStock(ticker) {
 
 document.addEventListener('DOMContentLoaded', () => {
   const searchInput = document.getElementById('searchInput');
-  const searchBtn   = document.getElementById('searchBtn');
 
-  searchBtn.addEventListener('click', () => searchStock(searchInput.value));
-  searchInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') searchStock(searchInput.value);
-  });
+  document.getElementById('searchBtn').addEventListener('click', () => searchStock(searchInput.value));
+  searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchStock(searchInput.value); });
 
   document.querySelectorAll('.suggestion-chip').forEach(chip => {
     chip.addEventListener('click', () => {
@@ -653,53 +609,74 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // API Key
+  const keyInput = document.getElementById('apiKeyInput');
+  if (keyInput && apiKey) keyInput.value = apiKey;
+  updateApiKeyStatus();
+
+  document.getElementById('saveApiKey')?.addEventListener('click', () => {
+    const val = (keyInput?.value || '').trim();
+    apiKey = val;
+    if (val) localStorage.setItem('finmetrics_apikey', val);
+    else localStorage.removeItem('finmetrics_apikey');
+    updateApiKeyStatus();
+  });
+
+  // Watchlist
   document.getElementById('watchlistBtn').addEventListener('click', () => {
     if (currentTicker) toggleWatchlist(currentTicker);
   });
-
   document.getElementById('clearWatchlist').addEventListener('click', () => {
     watchlist = [];
-    localStorage.setItem('finmetrics_watchlist', JSON.stringify(watchlist));
+    localStorage.setItem('finmetrics_watchlist', '[]');
     renderWatchlistGrid();
   });
 
+  // Error close
   document.getElementById('closeError').addEventListener('click', () => hide('errorBanner'));
 
-  // Timeframe buttons
+  // Timeframe
   document.querySelectorAll('.tf-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
-      if (currentTicker) loadChart(currentTicker, btn.dataset.range, btn.dataset.interval);
+      if (currentTicker) loadChart(currentTicker, btn.dataset.range);
     });
   });
 
-  // Financial statement tabs
+  // Financial tabs
   document.querySelectorAll('.fin-tab').forEach(tab => {
-    tab.addEventListener('click', () => {
+    tab.addEventListener('click', async () => {
       document.querySelectorAll('.fin-tab').forEach(t => t.classList.remove('active'));
       tab.classList.add('active');
-      if (!fullData) return;
-      const t = tab.dataset.tab;
-      if (t === 'income')   renderIncomeTable(fullData.incomeStatementHistory?.incomeStatementHistory || []);
-      if (t === 'balance')  renderBalanceTable(fullData.balanceSheetHistory?.balanceSheetStatements || []);
-      if (t === 'cashflow') renderCashFlowTable(fullData.cashflowStatementHistory?.cashflowStatements || []);
+      if (!fullData || !currentTicker) return;
+      document.getElementById('finContent').innerHTML =
+        '<p style="padding:20px;color:var(--text-muted)">Loading...</p>';
+      try {
+        const t = tab.dataset.tab;
+        if (t === 'income')   await loadAndRenderTab('ic', INCOME_FIELDS);
+        if (t === 'balance')  await loadAndRenderTab('bs', BALANCE_FIELDS);
+        if (t === 'cashflow') await loadAndRenderTab('cf', CASHFLOW_FIELDS);
+      } catch (e) {
+        document.getElementById('finContent').innerHTML =
+          `<p style="padding:20px;color:var(--red)">${e.message}</p>`;
+      }
     });
   });
 
-  // Navbar scroll effect
+  // Navbar scroll
   window.addEventListener('scroll', () => {
     document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 50);
   }, { passive: true });
 
-  // Hamburger menu
+  // Hamburger
   document.getElementById('hamburger').addEventListener('click', () => {
     document.getElementById('navLinks').classList.toggle('open');
   });
 
   // Theme toggle
   document.getElementById('themeToggle').addEventListener('click', () => {
-    const html = document.documentElement;
+    const html    = document.documentElement;
     const isLight = html.dataset.theme === 'light';
     html.dataset.theme = isLight ? 'dark' : 'light';
     document.getElementById('themeIconSun').style.display  = isLight ? '' : 'none';

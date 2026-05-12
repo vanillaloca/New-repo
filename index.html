@@ -100,6 +100,21 @@
           <button class="suggestion-chip" data-ticker="META">META</button>
           <button class="suggestion-chip" data-ticker="JPM">JPM</button>
         </div>
+
+        <!-- API Key Row -->
+        <div class="apikey-row">
+          <div class="apikey-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+            <input type="text" id="apiKeyInput" class="apikey-input" placeholder="Finnhub API key" autocomplete="off" spellcheck="false" />
+            <button id="saveApiKey" class="apikey-save">Save</button>
+          </div>
+          <p class="apikey-note" id="apiKeyNote">
+            <span id="apiKeyStatus">No key set — enter your free Finnhub key to search any stock.</span>
+            &nbsp;<a href="https://finnhub.io/register" target="_blank" rel="noopener" class="apikey-link">Get free key (30 sec, no credit card) →</a>
+          </p>
+        </div>
       </div>
     </div>
   </section>
@@ -302,7 +317,7 @@
                   <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
                 </svg>
               </div>
-              <h4 class="kpi-card-title">Growth & Dividends</h4>
+              <h4 class="kpi-card-title">Growth &amp; Dividends</h4>
             </div>
             <div class="kpi-list">
               <div class="kpi-item"><span class="kpi-name">Revenue Growth (YoY)</span><span class="kpi-value" id="kpiRevenueGrowth">--</span></div>
@@ -408,11 +423,11 @@
       <div class="footer-content">
         <div class="footer-brand">
           <span class="logo-text">Fin<span class="logo-accent">Metrics</span></span>
-          <p>Financial data powered by Yahoo Finance. For informational purposes only.</p>
+          <p>Financial data powered by <a href="https://finnhub.io" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">Finnhub</a>. For informational purposes only.</p>
         </div>
         <div class="footer-note">
           <p>Data may be delayed. Not financial advice.</p>
-          <p>© 2024 FinMetrics</p>
+          <p>© 2025 FinMetrics</p>
         </div>
       </div>
     </div>

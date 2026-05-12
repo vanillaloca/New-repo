@@ -381,6 +381,68 @@ body {
   background: var(--cyan-dim);
 }
 
+/* API Key Row */
+.apikey-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.apikey-box {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.apikey-input {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  outline: none;
+  width: 220px;
+}
+
+.apikey-input::placeholder { color: var(--text-muted); }
+
+.apikey-save {
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--cyan-dim);
+  color: var(--cyan);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.apikey-save:hover { background: var(--cyan); color: #000; }
+
+.apikey-note {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.apikey-link {
+  color: var(--cyan);
+  text-decoration: none;
+}
+
+.apikey-link:hover { text-decoration: underline; }
+
+.apikey-saved { color: var(--green) !important; }
+
 /* ===========================
    DASHBOARD
 =========================== */
