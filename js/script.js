@@ -1,412 +1,698 @@
 'use strict';
 
-const CLUB_ID = '598236';
-const PLATFORM = 'common-gen5';
-const CAPTAIN = 'Tim Kuhn';
+// ============================================================
+// Config — Finnhub API (free: 60 req/min, global stocks)
+// ============================================================
+const FH_BASE = 'https://finnhub.io/api/v1';
 
-const BASE = 'https://proclubs.ea.com/api/fc';
-const PROXY = 'https://api.allorigins.win/raw?url=';
+let currentTicker = '';
+let fullData      = null;
+let priceChart    = null;
+let watchlist     = JSON.parse(localStorage.getItem('finmetrics_watchlist') || '[]');
+let apiKey        = localStorage.getItem('finmetrics_apikey') || '';
 
-const POS_MAP = {
-  0:  { label: 'TW',  name: 'Torwart',                    group: 'gk',  color: '#f0c040' },
-  1:  { label: 'LI',  name: 'Libero',                     group: 'def', color: '#4a9eff' },
-  2:  { label: 'RFV', name: 'Rechter Flügelverteidiger',  group: 'def', color: '#4a9eff' },
-  3:  { label: 'RV',  name: 'Rechtsverteidiger',           group: 'def', color: '#4a9eff' },
-  4:  { label: 'IV',  name: 'Innenverteidiger',            group: 'def', color: '#4a9eff' },
-  5:  { label: 'LV',  name: 'Linksverteidiger',            group: 'def', color: '#4a9eff' },
-  6:  { label: 'LFV', name: 'Linker Flügelverteidiger',   group: 'def', color: '#4a9eff' },
-  7:  { label: 'DM',  name: 'Defensives Mittelfeld',       group: 'mid', color: '#a855f7' },
-  8:  { label: 'RM',  name: 'Rechtes Mittelfeld',          group: 'mid', color: '#a855f7' },
-  9:  { label: 'ZM',  name: 'Zentrales Mittelfeld',        group: 'mid', color: '#a855f7' },
-  10: { label: 'OM',  name: 'Offensives Mittelfeld',       group: 'mid', color: '#a855f7' },
-  11: { label: 'LM',  name: 'Linkes Mittelfeld',           group: 'mid', color: '#a855f7' },
-  12: { label: 'RA',  name: 'Rechtsaußen',                 group: 'att', color: '#f0c040' },
-  13: { label: 'ST',  name: 'Mittelstürmer',               group: 'att', color: '#f0c040' },
-  14: { label: 'LA',  name: 'Linksaußen',                  group: 'att', color: '#f0c040' },
-  25: { label: 'CF',  name: 'Hängende Spitze',             group: 'att', color: '#f0c040' },
-};
+// ============================================================
+// API
+// ============================================================
 
-function posInfo(pos) {
-  return POS_MAP[pos] || { label: 'UNK', name: 'Unbekannt', group: 'mid', color: '#6b7280' };
-}
+async function fhFetch(endpoint, params = {}) {
+  if (!apiKey) throw new Error('Enter your free Finnhub API key above to get started.');
 
-// ===========================
-// FETCH HELPERS
-// ===========================
-async function fetchJSON(url) {
-  const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const url = new URL(FH_BASE + endpoint);
+  url.searchParams.set('token', apiKey);
+  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
+
+  const res = await fetch(url.toString());
+  if (res.status === 401) throw new Error('Invalid API key. Get your free key at finnhub.io and enter it above.');
+  if (res.status === 403) throw new Error('Access denied. This data may require a higher Finnhub plan.');
+  if (res.status === 429) throw new Error('Rate limit hit (60/min on free plan). Wait a moment and try again.');
+  if (!res.ok) throw new Error(`API error: HTTP ${res.status}`);
   return res.json();
 }
 
-async function fetchEA(path) {
-  return fetchJSON(`${BASE}${path}`);
+const fhProfile    = t         => fhFetch('/stock/profile2',       { symbol: t });
+const fhQuote      = t         => fhFetch('/quote',                { symbol: t });
+const fhMetrics    = t         => fhFetch('/stock/metric',         { symbol: t, metric: 'all' });
+const fhRecs       = t         => fhFetch('/stock/recommendation', { symbol: t });
+const fhTargets    = t         => fhFetch('/stock/price-target',   { symbol: t });
+const fhCandle     = (t,r,f,to)=> fhFetch('/stock/candle',         { symbol: t, resolution: r, from: f, to });
+const fhFinancials = (t, stmt) => fhFetch('/stock/financials',     { symbol: t, statement: stmt, freq: 'annual' });
+
+// ============================================================
+// Formatters
+// ============================================================
+
+function fmtBig(v) {
+  const n = parseFloat(v);
+  if (v == null || isNaN(n)) return 'N/A';
+  const abs = Math.abs(n), s = n < 0 ? '-' : '';
+  if (abs >= 1e12) return s + (abs / 1e12).toFixed(2) + 'T';
+  if (abs >= 1e9)  return s + (abs / 1e9).toFixed(2)  + 'B';
+  if (abs >= 1e6)  return s + (abs / 1e6).toFixed(2)  + 'M';
+  if (abs >= 1e3)  return s + (abs / 1e3).toFixed(1)  + 'K';
+  return s + abs.toFixed(2);
 }
 
-async function fetchViaProxy(path) {
-  const target = encodeURIComponent(`${BASE}${path}`);
-  return fetchJSON(`${PROXY}${target}`);
+// profile.marketCapitalization and profile.shareOutstanding are in millions
+function fmtMillions(v)  { return fmtCurrency(parseFloat(v) * 1e6); }
+function fmtCurrency(v)  { const s = fmtBig(v); return s === 'N/A' ? 'N/A' : '$' + s; }
+function fmtPrice(v)     { const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : '$' + n.toFixed(2); }
+function fmtRatio(v, d=2){ const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : n.toFixed(d) + 'x'; }
+
+// Finnhub margins/ROE/ROA come as %, e.g. 44.13 already means 44.13%
+function fmtPctDirect(v, d=2) {
+  const n = parseFloat(v);
+  return (v == null || isNaN(n)) ? 'N/A' : n.toFixed(d) + '%';
 }
 
-// Three-tier: local cached file → direct EA API → CORS proxy
-async function fetchWithFallback(localFile, eaPath) {
-  // Tier 1: local data/*.json (filled daily by GitHub Actions)
-  try {
-    const data = await fetchJSON(localFile);
-    const isEmpty = Array.isArray(data) ? data.length === 0 : Object.keys(data).length === 0;
-    if (!isEmpty) return data;
-  } catch (_) { /* fall through */ }
-
-  // Tier 2: direct EA API (browser requests bypass Cloudflare allowlist)
-  try {
-    return await fetchEA(eaPath);
-  } catch (_) { /* fall through */ }
-
-  // Tier 3: CORS proxy as last resort
-  return fetchViaProxy(eaPath);
+// Growth rates come as decimals, e.g. 0.1286 means 12.86%
+function fmtPctDecimal(v, d=2) {
+  const n = parseFloat(v);
+  return (v == null || isNaN(n)) ? 'N/A' : (n * 100).toFixed(d) + '%';
 }
 
-// ===========================
-// LOAD EVERYTHING
-// ===========================
-async function loadClubData() {
+function fmtDate(v) {
+  if (!v) return 'N/A';
+  return new Date(v).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// ============================================================
+// DOM helpers
+// ============================================================
+
+function setText(id, text) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = text ?? 'N/A';
+}
+
+function setColored(id, text, positive) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text ?? 'N/A';
+  el.className = 'kpi-value' + (positive === true ? ' positive' : positive === false ? ' negative' : '');
+}
+
+function show(id) { const el = document.getElementById(id); if (el) el.style.display = ''; }
+function hide(id) { const el = document.getElementById(id); if (el) el.style.display = 'none'; }
+
+// ============================================================
+// Render: Stock Header
+// ============================================================
+
+function renderHeader(profile, quote, ticker) {
+  const price  = parseFloat(quote.c);
+  const change = parseFloat(quote.d);
+  const pct    = parseFloat(quote.dp); // already in %, e.g. 0.83
+  const isUp   = change >= 0;
+
+  setText('stockName',        profile.name || ticker);
+  setText('stockTickerBadge', ticker);
+  setText('stockExchange',    profile.exchange || '');
+  setText('stockSector',      profile.finnhubIndustry || 'Equity');
+
+  // Company logo from Finnhub
+  const logoContainer = document.getElementById('stockLogo');
+  if (logoContainer) {
+    if (profile.logo) {
+      logoContainer.innerHTML = `<img src="${profile.logo}" alt="${ticker}"
+        style="width:36px;height:36px;object-fit:contain;border-radius:6px;"
+        onerror="this.outerHTML='<span id=stockLogoText>${ticker.slice(0,2)}</span>'" />`;
+    } else {
+      logoContainer.innerHTML = `<span id="stockLogoText">${ticker.slice(0, 2)}</span>`;
+    }
+  }
+
+  setText('currentPrice', isNaN(price) ? 'N/A' : '$' + price.toFixed(2));
+
+  const changeEl = document.getElementById('priceChange');
+  if (changeEl) changeEl.className = 'price-change ' + (isUp ? 'positive' : 'negative');
+
+  setText('changeAmount', (isUp ? '+' : '') + (isNaN(change) ? '0.00' : '$' + change.toFixed(2)));
+
+  const badge = document.getElementById('changeBadge');
+  if (badge) {
+    badge.textContent = (isUp ? '+' : '') + (isNaN(pct) ? '0.00' : pct.toFixed(2)) + '%';
+    badge.className   = 'change-badge ' + (isUp ? 'positive' : 'negative');
+  }
+
+  setText('priceDate', 'Real-time · ' + (profile.currency || 'USD'));
+
+  const wlBtn = document.getElementById('watchlistBtn');
+  if (wlBtn) wlBtn.dataset.ticker = ticker;
+  updateWatchlistBtn(ticker);
+  show('stockHeader');
+}
+
+// ============================================================
+// Render: Quick Stats
+// ============================================================
+
+function renderQuickStats(profile, quote, metrics) {
+  const m      = metrics.metric || {};
+  const shares = parseFloat(profile.shareOutstanding); // millions
+
+  setText('statMarketCap', fmtMillions(profile.marketCapitalization));
+  setText('statPE',        fmtRatio(m.peBasicExclExtraTTM || m.peNormalizedAnnual));
+  setText('statEPS',       fmtPrice(m.epsNormalizedAnnual || m.epsAnnual));
+
+  const rev = parseFloat(m.revenuePerShareAnnual) * shares * 1e6;
+  setText('statRevenue',   isNaN(rev) ? 'N/A' : fmtCurrency(rev));
+
+  const ni = parseFloat(m.epsAnnual) * shares * 1e6;
+  setText('statNetIncome', isNaN(ni) ? 'N/A' : fmtCurrency(ni));
+
+  const fcf = parseFloat(m.pfcfShareAnnual || m.cashFlowPerShareAnnual) * shares * 1e6;
+  setText('statFCF', isNaN(fcf) ? 'N/A' : fmtCurrency(fcf));
+
+  setText('statDivYield', m.dividendYieldIndicatedAnnual != null
+    ? fmtPctDirect(m.dividendYieldIndicatedAnnual) : 'N/A');
+  setText('statBeta', m.beta != null ? parseFloat(m.beta).toFixed(2) : 'N/A');
+
+  show('quickStats');
+}
+
+// ============================================================
+// Render: KPI Cards
+// ============================================================
+
+function renderKPIs(profile, quote, metrics, recs, targets) {
+  const m        = metrics.metric || {};
+  const shares   = parseFloat(profile.shareOutstanding);
+  const curPrice = parseFloat(quote.c);
+
+  // -- Valuation --
+  setText('kpiPE',        fmtRatio(m.peBasicExclExtraTTM || m.peNormalizedAnnual));
+  setText('kpiForwardPE', 'N/A');
+  setText('kpiPEG',       'N/A');
+  setText('kpiPB',        fmtRatio(m.ptbvAnnual || m.ptbvQuarterly));
+  setText('kpiPS',        fmtRatio(m.psTTM || m.psAnnual));
+  setText('kpiEVEBITDA',  'N/A');
+  setText('kpiEV',        fmtMillions(profile.marketCapitalization)); // approx
+  setText('kpiBookValue', fmtPrice(m.bookValuePerShareAnnual || m.bookValuePerShareQuarterly));
+
+  // -- Profitability --
+  const setMargin = (id, val) => {
+    const n = parseFloat(val);
+    if (val == null || isNaN(n)) { setText(id, 'N/A'); return; }
+    setColored(id, n.toFixed(2) + '%', n > 0);
+  };
+
+  setMargin('kpiGrossMargin',   m.grossMarginTTM    || m.grossMarginAnnual);
+  setMargin('kpiOpMargin',      m.operatingMarginTTM|| m.operatingMarginAnnual);
+  setMargin('kpiNetMargin',     m.netProfitMarginTTM|| m.netProfitMarginAnnual);
+  setMargin('kpiEBITDAMargin',  m.ebitdaMarginAnnual);
+  setMargin('kpiROE',           m.roeTTM   || m.roeRfy);
+  setMargin('kpiROA',           m.roaTTM   || m.roaRfy);
+  setMargin('kpiROIC',          m.roiTTM   || m.roicRfy);
+  setText('kpiEBITDA', 'N/A');
+
+  // -- Financial Health --
+  const rev = parseFloat(m.revenuePerShareAnnual) * shares * 1e6;
+  setText('kpiRevenue', isNaN(rev) ? 'N/A' : fmtCurrency(rev));
+
+  const ni = parseFloat(m.epsAnnual) * shares * 1e6;
+  if (!isNaN(ni)) setColored('kpiNetIncome', fmtCurrency(ni), ni > 0);
+  else setText('kpiNetIncome', 'N/A');
+
+  setText('kpiTotalCash',  'N/A');
+
+  const debt = parseFloat(m.totalDebtAnnual || m.totalDebtMRQ);
+  setText('kpiTotalDebt', isNaN(debt) ? 'N/A' : fmtCurrency(debt));
+
+  const de = parseFloat(m['totalDebt/totalEquityAnnual'] || m['totalDebt/totalEquityQuarterly']);
+  setText('kpiDebtEquity', isNaN(de) ? 'N/A' : (de / 100).toFixed(2) + 'x');
+
+  const cr = parseFloat(m.currentRatioAnnual || m.currentRatioQuarterly);
+  setText('kpiCurrentRatio', isNaN(cr) ? 'N/A' : cr.toFixed(2) + 'x');
+
+  const qr = parseFloat(m.quickRatioAnnual || m.quickRatioQuarterly);
+  setText('kpiQuickRatio', isNaN(qr) ? 'N/A' : qr.toFixed(2) + 'x');
+
+  const fcf = parseFloat(m.pfcfShareAnnual || m.cashFlowPerShareAnnual) * shares * 1e6;
+  if (!isNaN(fcf)) setColored('kpiFCF', fmtCurrency(fcf), fcf > 0);
+  else setText('kpiFCF', 'N/A');
+
+  // -- Growth & Dividends --
+  const revG = parseFloat(m.revenueGrowthTTMYoy || m.revenueGrowthQuarterlyYoy);
+  const epsG = parseFloat(m.epsGrowthTTMYoy     || m.epsGrowthQuarterlyYoy);
+
+  if (!isNaN(revG)) setColored('kpiRevenueGrowth',  (revG > 0 ? '+' : '') + fmtPctDecimal(revG), revG > 0);
+  else setText('kpiRevenueGrowth', 'N/A');
+
+  if (!isNaN(epsG)) setColored('kpiEarningsGrowth', (epsG > 0 ? '+' : '') + fmtPctDecimal(epsG), epsG > 0);
+  else setText('kpiEarningsGrowth', 'N/A');
+
+  setText('kpiEPS',        fmtPrice(m.epsAnnual || m.epsNormalizedAnnual));
+  setText('kpiForwardEPS', 'N/A');
+  setText('kpiDivYield',   m.dividendYieldIndicatedAnnual != null
+    ? fmtPctDirect(m.dividendYieldIndicatedAnnual) : 'N/A');
+  setText('kpiDivRate',    fmtPrice(m.dividendPerShareAnnual));
+  setText('kpiPayoutRatio', m.payoutRatioAnnual != null ? fmtPctDirect(m.payoutRatioAnnual) : 'N/A');
+  setText('kpiExDivDate',  'N/A');
+
+  // -- Market Data --
+  setText('kpi52High',    fmtPrice(m['52WeekHigh']));
+  setText('kpi52Low',     fmtPrice(m['52WeekLow']));
+  setText('kpi50MA',      'N/A');
+  setText('kpi200MA',     'N/A');
+  setText('kpiVolume',    fmtBig(parseFloat(quote.v)));
+  setText('kpiAvgVolume', m['10DayAverageTradingVolume'] != null
+    ? fmtBig(parseFloat(m['10DayAverageTradingVolume']) * 1e6) : 'N/A');
+  setText('kpiShares',    fmtBig(shares * 1e6));
+  setText('kpiFloat',     'N/A');
+
+  // -- Analyst Consensus --
+  const latestRec = Array.isArray(recs) && recs.length ? recs[0] : null;
+  if (latestRec) {
+    const sb    = latestRec.strongBuy  || 0;
+    const b     = latestRec.buy        || 0;
+    const h     = latestRec.hold       || 0;
+    const s     = latestRec.sell       || 0;
+    const ss    = latestRec.strongSell || 0;
+    const total = sb + b + h + s + ss;
+    const buyPct = total ? (sb + b) / total : 0;
+
+    let rec = 'Hold';
+    if (buyPct > 0.6) rec = buyPct > 0.8 ? 'Strong Buy' : 'Buy';
+    if ((s + ss) / total > 0.4) rec = 'Sell';
+
+    const recEl = document.getElementById('kpiRecommendation');
+    if (recEl) {
+      recEl.textContent = rec;
+      recEl.className   = 'kpi-value' + (rec.includes('Buy') ? ' positive' : rec.includes('Sell') ? ' negative' : '');
+    }
+    setText('kpiRating',       `${sb + b} Buy · ${h} Hold · ${s + ss} Sell`);
+    setText('kpiAnalystCount', total.toString());
+  } else {
+    setText('kpiRecommendation', 'N/A');
+    setText('kpiRating',         'N/A');
+    setText('kpiAnalystCount',   'N/A');
+  }
+
+  if (targets?.targetMean) {
+    const mean   = parseFloat(targets.targetMean);
+    const upside = (mean - curPrice) / curPrice;
+    setText('kpiTargetPrice', fmtPrice(mean));
+    setText('kpiTargetHigh',  fmtPrice(targets.targetHigh));
+    setText('kpiTargetLow',   fmtPrice(targets.targetLow));
+    setColored('kpiUpside', (upside > 0 ? '+' : '') + fmtPctDecimal(upside), upside > 0);
+  } else {
+    ['kpiTargetPrice', 'kpiTargetHigh', 'kpiTargetLow', 'kpiUpside'].forEach(id => setText(id, 'N/A'));
+  }
+  setText('kpiShortRatio', 'N/A');
+
+  show('kpis');
+}
+
+// ============================================================
+// Render: Price Chart
+// ============================================================
+
+function renderChart(candle) {
+  if (candle.s !== 'ok' || !candle.t?.length) return;
+
+  const labels = candle.t.map(ts =>
+    new Date(ts * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+  );
+  const prices = candle.c.map(v => v != null ? +parseFloat(v).toFixed(2) : null);
+
+  if (priceChart) { priceChart.destroy(); priceChart = null; }
+
+  const isUp      = prices.length >= 2 && (prices[prices.length - 1] ?? 0) >= (prices[0] ?? 0);
+  const lineColor = isUp ? '#10b981' : '#ef4444';
+
+  const ctx  = document.getElementById('priceChart').getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 320);
+  grad.addColorStop(0, isUp ? 'rgba(16,185,129,0.25)' : 'rgba(239,68,68,0.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  priceChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: prices,
+        borderColor: lineColor,
+        backgroundColor: grad,
+        borderWidth: 2,
+        fill: true,
+        tension: 0.3,
+        pointRadius: 0,
+        pointHoverRadius: 5,
+        pointHoverBackgroundColor: lineColor,
+        spanGaps: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { intersect: false, mode: 'index' },
+      animation: { duration: 400 },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#0f1628',
+          borderColor: '#1e3254',
+          borderWidth: 1,
+          titleColor: '#8892a4',
+          bodyColor: '#f0f4ff',
+          padding: 10,
+          callbacks: { label: c => ' $' + (c.parsed.y?.toFixed(2) ?? '—') },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(255,255,255,0.03)' },
+          ticks: { color: '#8892a4', font: { size: 11 }, maxTicksLimit: 8 },
+        },
+        y: {
+          position: 'right',
+          grid: { color: 'rgba(255,255,255,0.05)' },
+          ticks: { color: '#8892a4', font: { size: 11 }, callback: v => '$' + v.toFixed(0) },
+        },
+      },
+    },
+  });
+}
+
+// resolution and days per timeframe
+const TF_MAP = {
+  '5d':  ['30', 5],
+  '1mo': ['D',  30],
+  '3mo': ['D',  90],
+  '6mo': ['D',  180],
+  '1y':  ['D',  365],
+  '5y':  ['W',  5 * 365],
+};
+
+async function loadChart(ticker, range) {
+  const [resolution, days] = TF_MAP[range] || ['D', 365];
+  const to   = Math.floor(Date.now() / 1000);
+  const from = to - days * 24 * 60 * 60;
   try {
-    const [clubRes, membersRes, matchRes] = await Promise.allSettled([
-      fetchWithFallback('data/club.json',    `/clubs/overallStats?platform=${PLATFORM}&clubIds=${CLUB_ID}`),
-      fetchWithFallback('data/members.json', `/clubs/members?platform=${PLATFORM}&clubId=${CLUB_ID}`),
-      fetchWithFallback('data/matches.json', `/clubs/matches?matchType=gameType9&platform=${PLATFORM}&clubIds=${CLUB_ID}`),
-    ]);
-
-    if (clubRes.status === 'fulfilled')    applyClubStats(clubRes.value);
-    else showApiNote('Club-Stats nicht verfügbar.');
-
-    if (membersRes.status === 'fulfilled') buildSquad(membersRes.value);
-    else showSquadError();
-
-    if (matchRes.status === 'fulfilled')   buildMatches(matchRes.value);
-    else showMatchError();
-
-    showLastUpdated();
+    const candle = await fhCandle(ticker, resolution, from, to);
+    renderChart(candle);
   } catch (e) {
-    showApiNote('EA-Daten nicht verfügbar.');
+    console.warn('Chart error:', e.message);
   }
 }
 
-async function showLastUpdated() {
-  try {
-    const info = await fetchJSON('data/last_updated.json');
-    if (info && info.updated) {
-      const d = new Date(info.updated);
-      showApiNote(`Daten zuletzt aktualisiert: ${d.toLocaleString('de-DE')}`);
-    }
-  } catch (_) { /* no timestamp file yet */ }
-}
+// ============================================================
+// Render: Financial Statements (lazy-loaded per tab)
+// ============================================================
 
-// ===========================
-// CLUB STATS
-// ===========================
-function applyClubStats(data) {
-  const club = Array.isArray(data) ? data[0] : (data[CLUB_ID] || Object.values(data)[0]);
-  if (!club) return;
-
-  const wins   = parseInt(club.wins   || club.totalWins   || 0);
-  const losses = parseInt(club.losses || club.totalLosses || 0);
-  const draws  = parseInt(club.ties   || club.totalTies   || 0);
-  const goals  = parseInt(club.goals  || club.totalGoals  || 0);
-  const games  = wins + losses + draws;
-  const winRate = games > 0 ? Math.round((wins / games) * 100) : 0;
-  const div     = club.divisionRank || club.rankingPoints || '–';
-  const members = club.memberCount  || club.members || '–';
-  const seasonWins = club.curSeasonWins || club.seasonWins || wins;
-
-  animateNumber(document.getElementById('statMember'), members);
-  animateNumber(document.getElementById('statWins'),   wins);
-  animateNumber(document.getElementById('statGoals'),  goals);
-  setText('statDiv', typeof div === 'number' ? `Div ${div}` : div);
-
-  setRing('ringWinRate', winRate, winRate + '%');
-  setText('valWinRate', winRate + '%');
-  setText('labelWinRate', `${wins}S / ${losses}N / ${draws}U`);
-
-  setRing('ringGoals', Math.min(goals / 5, 100), goals);
-  setText('valGoals', goals);
-
-  setRing('ringSeason', Math.min((seasonWins / 10) * 100, 100), seasonWins);
-  setText('valSeason', seasonWins);
-
-  setRing('ringGames', Math.min((games / 20) * 100, 100), games);
-  setText('valGames', games);
-}
-
-// ===========================
-// SQUAD
-// ===========================
-function buildSquad(data) {
-  const members = data.members || data || [];
-  const grid = document.getElementById('squadGrid');
-  if (!members.length) { grid.innerHTML = '<p class="no-data">Keine Spieler gefunden.</p>'; return; }
-
-  const sorted = [...members].sort((a, b) => (b.skOverall || 0) - (a.skOverall || 0));
-
-  grid.innerHTML = sorted.map(p => {
-    const pos     = posInfo(p.proPos ?? p.position ?? 9);
-    const ovr     = p.skOverall || '?';
-    const name    = p.name || p.proName || 'Unbekannt';
-    const goals   = p.skGoals   || 0;
-    const assists = p.skAssists || 0;
-    const rating  = p.skRating  ? parseFloat(p.skRating).toFixed(1) : '–';
-    const isCapt  = name.toLowerCase() === CAPTAIN.toLowerCase();
-
-    return `
-      <div class="player-card${isCapt ? ' player-card--captain' : ''}" data-pos="${pos.group}">
-        <div class="player-card__rating">${ovr}</div>
-        <div class="player-card__pos" style="background:${pos.color}22;color:${pos.color}">${pos.label}</div>
-        ${isCapt ? '<div class="captain-badge">©</div>' : ''}
-        <div class="player-card__avatar">
-          <svg viewBox="0 0 80 80" fill="none">
-            <circle cx="40" cy="30" r="18" fill="${pos.color}" opacity=".2"/>
-            <circle cx="40" cy="28" r="14" fill="${pos.color}" opacity=".5"/>
-            <ellipse cx="40" cy="68" rx="24" ry="16" fill="${pos.color}" opacity=".15"/>
-          </svg>
-        </div>
-        <div class="player-card__info">
-          <h4>${name}${isCapt ? ' <span class="capt-icon">Kapitän</span>' : ''}</h4>
-          <span>${pos.name}</span>
-        </div>
-        <div class="player-card__stats">
-          <div><span>TORE</span><b>${goals}</b></div>
-          <div><span>ASS</span><b>${assists}</b></div>
-          <div><span>WTG</span><b>${rating}</b></div>
-        </div>
-      </div>`;
+function buildFinTable(fields, reports) {
+  if (!reports?.length) {
+    return '<p style="padding:20px;color:var(--text-muted)">No annual data available for this ticker.</p>';
+  }
+  const years = reports.slice(0, 4).reverse();
+  const head  = years.map(r => `<th>${(r.period || '').slice(0, 4)}</th>`).join('');
+  const rows  = fields.map(f => {
+    const cells = years.map(r => {
+      const v = r[f.key];
+      if (v == null || v === '') return '<td class="fin-value">N/A</td>';
+      const n = parseFloat(v);
+      const cls = f.colored ? (n > 0 ? ' positive' : n < 0 ? ' negative' : '') : '';
+      return `<td class="fin-value${cls}">${fmtCurrency(v)}</td>`;
+    }).join('');
+    return `<tr><td class="fin-label">${f.label}</td>${cells}</tr>`;
   }).join('');
 
-  buildTopScorers(members);
-  initFilters();
-  revealCards();
+  return `<div class="fin-table-wrapper"><table class="fin-table">
+    <thead><tr><th>Metric</th>${head}</tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
 }
 
-function showSquadError() {
-  document.getElementById('squadGrid').innerHTML =
-    '<p class="no-data">Squad-Daten konnten nicht geladen werden.</p>';
+async function loadAndRenderTab(stmt, fields) {
+  if (!fullData.financials) fullData.financials = {};
+  if (!fullData.financials[stmt]) {
+    const res = await fhFinancials(currentTicker, stmt);
+    fullData.financials[stmt] = res?.financials || [];
+  }
+  document.getElementById('finContent').innerHTML = buildFinTable(fields, fullData.financials[stmt]);
 }
 
-// ===========================
-// TOP SCORERS
-// ===========================
-function buildTopScorers(members) {
-  const sorted = [...members]
-    .filter(p => (p.skGoals || 0) > 0)
-    .sort((a, b) => (b.skGoals || 0) - (a.skGoals || 0))
-    .slice(0, 5);
+const INCOME_FIELDS = [
+  { key: 'totalRevenue',        label: 'Total Revenue' },
+  { key: 'grossProfit',         label: 'Gross Profit',     colored: true },
+  { key: 'operatingIncome',     label: 'Operating Income', colored: true },
+  { key: 'netIncome',           label: 'Net Income',       colored: true },
+  { key: 'ebitda',              label: 'EBITDA',           colored: true },
+  { key: 'researchDevelopment', label: 'R&D Expenses' },
+];
+const BALANCE_FIELDS = [
+  { key: 'totalAssets',             label: 'Total Assets' },
+  { key: 'totalCurrentAssets',      label: 'Current Assets' },
+  { key: 'cash',                    label: 'Cash & Equivalents' },
+  { key: 'totalLiab',              label: 'Total Liabilities' },
+  { key: 'totalCurrentLiabilities', label: 'Current Liabilities' },
+  { key: 'longTermDebt',           label: 'Long-Term Debt' },
+  { key: 'totalStockholderEquity', label: "Stockholders' Equity", colored: true },
+];
+const CASHFLOW_FIELDS = [
+  { key: 'totalCashFromOperatingActivities', label: 'Operating Cash Flow', colored: true },
+  { key: 'capitalExpenditures',              label: 'Capital Expenditures' },
+  { key: 'totalCashFromInvestingActivities', label: 'Investing Activities' },
+  { key: 'totalCashFromFinancingActivities', label: 'Financing Activities' },
+  { key: 'dividendsPaid',                   label: 'Dividends Paid' },
+];
 
-  if (!sorted.length) return;
-  const max    = sorted[0].skGoals || 1;
-  const colors = ['#f0c040,#ff8c00', '#4a9eff,#7c3aed', '#a855f7,#ec4899', '#22c55e,#16a34a', '#f0c040,#4a9eff'];
+// ============================================================
+// Watchlist
+// ============================================================
 
-  document.getElementById('topScorers').innerHTML = sorted.map((p, i) => `
-    <div class="stats-bar-item">
-      <div class="stats-bar-meta">
-        <span>${p.name || p.proName}</span>
-        <span>${p.skGoals} Tore</span>
-      </div>
-      <div class="stats-bar-track">
-        <div class="stats-bar-fill" data-width="${Math.round((p.skGoals / max) * 95)}"
-          style="background:linear-gradient(90deg,${colors[i]});width:0%"></div>
-      </div>
-    </div>`).join('');
+function updateWatchlistBtn(ticker) {
+  const btn    = document.getElementById('watchlistBtn');
+  if (!btn) return;
+  const inList = watchlist.includes(ticker);
+  btn.innerHTML = inList
+    ? `<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> In Watchlist`
+    : `<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg> Add to Watchlist`;
+  btn.classList.toggle('active', inList);
+}
 
-  setTimeout(() => {
-    document.querySelectorAll('.stats-bar-fill').forEach(el => {
-      el.style.width = el.dataset.width + '%';
+function toggleWatchlist(ticker) {
+  const idx = watchlist.indexOf(ticker);
+  if (idx === -1) watchlist.push(ticker); else watchlist.splice(idx, 1);
+  localStorage.setItem('finmetrics_watchlist', JSON.stringify(watchlist));
+  updateWatchlistBtn(ticker);
+  renderWatchlistGrid();
+}
+
+function renderWatchlistGrid() {
+  const grid  = document.getElementById('watchlistGrid');
+  const empty = document.getElementById('watchlistEmpty');
+  grid.querySelectorAll('.watchlist-item').forEach(el => el.remove());
+  if (!watchlist.length) { empty.style.display = ''; return; }
+  empty.style.display = 'none';
+  watchlist.forEach(ticker => {
+    const item = document.createElement('div');
+    item.className = 'watchlist-item';
+    item.innerHTML = `<span class="watchlist-ticker">${ticker}</span><button class="watchlist-remove">×</button>`;
+    item.querySelector('.watchlist-ticker').addEventListener('click', () => searchStock(ticker));
+    item.querySelector('.watchlist-remove').addEventListener('click', e => {
+      e.stopPropagation(); toggleWatchlist(ticker);
     });
-  }, 300);
+    grid.appendChild(item);
+  });
 }
 
-// ===========================
-// MATCHES
-// ===========================
-function buildMatches(data) {
-  const matches = Array.isArray(data) ? data : (data.matches || []);
-  const list    = document.getElementById('matchList');
+// ============================================================
+// Main Search
+// ============================================================
 
-  if (!matches.length) {
-    list.innerHTML = '<p class="no-data">Keine Spiele gefunden.</p>';
+async function searchStock(ticker) {
+  ticker = ticker.trim().toUpperCase();
+  if (!ticker) return;
+
+  if (!apiKey) {
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorMessage').textContent =
+      'Please enter your free Finnhub API key above. Register at finnhub.io — takes 30 seconds, no credit card.';
+    if (banner) banner.style.display = 'flex';
+    document.querySelector('.apikey-box')?.scrollIntoView({ behavior: 'smooth' });
     return;
   }
 
-  list.innerHTML = matches.slice(0, 8).map(m => {
-    const clubs    = m.clubs || {};
-    const clubKeys = Object.keys(clubs);
-    const ourKey   = clubKeys.find(k => k === CLUB_ID || clubs[k]?.clubId == CLUB_ID) || clubKeys[0];
-    const oppKey   = clubKeys.find(k => k !== ourKey) || clubKeys[1];
-    const us       = clubs[ourKey] || {};
-    const opp      = clubs[oppKey] || {};
-    const ourGoals = parseInt(us.goals  ?? 0);
-    const oppGoals = parseInt(opp.goals ?? 0);
-    const oppName  = opp.details?.name || opp.name || 'Gegner';
-    const result   = ourGoals > oppGoals ? 'win' : ourGoals < oppGoals ? 'loss' : 'draw';
-    const badge    = result === 'win' ? 'S' : result === 'loss' ? 'N' : 'U';
-    const date     = m.timestamp
-      ? new Date(m.timestamp * 1000).toLocaleDateString('de-DE', { day: 'numeric', month: 'short' })
-      : '–';
+  currentTicker = ticker;
+  fullData      = {};
 
-    return `
-      <div class="match-item match-item--${result}">
-        <div class="match-date">${date}</div>
-        <div class="match-teams">
-          <span class="match-home">nk Verdansk</span>
-          <div class="match-score">
-            <span>${ourGoals}</span>
-            <span class="match-score-sep">:</span>
-            <span>${oppGoals}</span>
-          </div>
-          <span class="match-away">${oppName}</span>
-        </div>
-        <div class="match-badge match-badge--${result}">${badge}</div>
-      </div>`;
-  }).join('');
+  show('loadingOverlay');
+  hide('errorBanner');
+  hide('stockHeader');
+  hide('chartSection');
+  hide('quickStats');
+  hide('kpis');
+  hide('financials');
+  document.querySelectorAll('.fin-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
+
+  try {
+    const now  = Math.floor(Date.now() / 1000);
+    const from = now - 365 * 24 * 60 * 60;
+
+    const [profile, quote, metrics, recs, targets, candle] = await Promise.all([
+      fhProfile(ticker),
+      fhQuote(ticker),
+      fhMetrics(ticker),
+      fhRecs(ticker).catch(() => []),
+      fhTargets(ticker).catch(() => ({})),
+      fhCandle(ticker, 'D', from, now).catch(() => ({ s: 'no_data' })),
+    ]);
+
+    if (!profile.name && !profile.ticker) {
+      throw new Error(`"${ticker}" not found. Please check the ticker symbol.`);
+    }
+
+    fullData = { profile, quote, metrics, recs, targets };
+
+    renderHeader(profile, quote, ticker);
+    renderQuickStats(profile, quote, metrics);
+    renderKPIs(profile, quote, metrics, recs, targets);
+
+    if (candle.s === 'ok') { renderChart(candle); show('chartSection'); }
+
+    // Load income statement lazily
+    show('financials');
+    document.getElementById('finContent').innerHTML =
+      '<p style="padding:20px;color:var(--text-muted)">Loading...</p>';
+    try {
+      await loadAndRenderTab('ic', INCOME_FIELDS);
+    } catch (_) {
+      document.getElementById('finContent').innerHTML =
+        '<p style="padding:20px;color:var(--text-muted)">Financial statements unavailable for this ticker.</p>';
+    }
+
+    document.getElementById('stockHeader')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch (err) {
+    console.error('searchStock error:', err);
+    const banner = document.getElementById('errorBanner');
+    document.getElementById('errorMessage').textContent = err.message || 'An unexpected error occurred.';
+    if (banner) banner.style.display = 'flex';
+    banner?.scrollIntoView({ behavior: 'smooth' });
+  } finally {
+    hide('loadingOverlay');
+  }
 }
 
-function showMatchError() {
-  document.getElementById('matchList').innerHTML =
-    '<p class="no-data">Spielergebnisse konnten nicht geladen werden.</p>';
+// ============================================================
+// API Key UI
+// ============================================================
+
+function updateApiKeyStatus() {
+  const status = document.getElementById('apiKeyStatus');
+  if (!status) return;
+  if (apiKey) {
+    status.innerHTML = `Key active: <strong>${apiKey.slice(0, 6)}****</strong> — search any stock globally.`;
+    status.className = 'apikey-saved';
+  } else {
+    status.innerHTML = 'No key set — enter your free Finnhub key to search any stock.';
+    status.className = '';
+  }
 }
 
-// ===========================
-// HELPERS
-// ===========================
-function setText(id, val) {
-  const el = document.getElementById(id);
-  if (el) el.textContent = val;
-}
+// ============================================================
+// Event Wiring
+// ============================================================
 
-function animateNumber(el, target) {
-  if (!el || isNaN(target)) { if (el) el.textContent = target; return; }
-  const n     = parseInt(target);
-  const dur   = 1800;
-  const start = performance.now();
-  const tick  = (now) => {
-    const p = Math.min((now - start) / dur, 1);
-    const e = 1 - Math.pow(1 - p, 3);
-    el.textContent = Math.floor(e * n);
-    if (p < 1) requestAnimationFrame(tick);
-  };
-  requestAnimationFrame(tick);
-}
+document.addEventListener('DOMContentLoaded', () => {
+  const searchInput = document.getElementById('searchInput');
 
-function setRing(id, percent, label) {
-  const ring = document.getElementById(id);
-  if (!ring) return;
-  const circ = 2 * Math.PI * 52;
-  ring.style.strokeDasharray  = circ;
-  ring.style.strokeDashoffset = circ * (1 - Math.min(percent, 100) / 100);
-}
+  document.getElementById('searchBtn').addEventListener('click', () => searchStock(searchInput.value));
+  searchInput.addEventListener('keydown', e => { if (e.key === 'Enter') searchStock(searchInput.value); });
 
-function showApiNote(msg) {
-  const el = document.getElementById('apiStatus');
-  if (el) { el.textContent = msg; el.style.display = 'block'; }
-}
-
-// ===========================
-// FILTERS
-// ===========================
-function initFilters() {
-  document.querySelectorAll('.filter-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      const f = btn.dataset.filter;
-      document.querySelectorAll('.player-card').forEach(c => {
-        c.classList.toggle('hidden', f !== 'all' && c.dataset.pos !== f);
-      });
+  document.querySelectorAll('.suggestion-chip').forEach(chip => {
+    chip.addEventListener('click', () => {
+      searchInput.value = chip.dataset.ticker;
+      searchStock(chip.dataset.ticker);
     });
   });
-}
 
-function revealCards() {
-  document.querySelectorAll('.player-card, .about-card, .stat-card, .match-item, .stats-bar-item').forEach(el => {
-    el.classList.add('reveal');
-    revealObserver.observe(el);
+  // API Key
+  const keyInput = document.getElementById('apiKeyInput');
+  if (keyInput && apiKey) keyInput.value = apiKey;
+  updateApiKeyStatus();
+
+  document.getElementById('saveApiKey')?.addEventListener('click', () => {
+    const val = (keyInput?.value || '').trim();
+    apiKey = val;
+    if (val) localStorage.setItem('finmetrics_apikey', val);
+    else localStorage.removeItem('finmetrics_apikey');
+    updateApiKeyStatus();
   });
-}
 
-// ===========================
-// NAVBAR SCROLL
-// ===========================
-const navbar = document.getElementById('navbar');
-window.addEventListener('scroll', () => {
-  navbar.classList.toggle('scrolled', window.scrollY > 40);
-});
-
-// ===========================
-// MOBILE MENU
-// ===========================
-const hamburger = document.getElementById('hamburger');
-const navLinks  = document.getElementById('navLinks');
-
-hamburger.addEventListener('click', () => {
-  navLinks.classList.toggle('open');
-  const bars   = hamburger.querySelectorAll('span');
-  const isOpen = navLinks.classList.contains('open');
-  bars[0].style.transform = isOpen ? 'rotate(45deg) translate(5px, 5px)' : '';
-  bars[1].style.opacity   = isOpen ? '0' : '1';
-  bars[2].style.transform = isOpen ? 'rotate(-45deg) translate(5px, -5px)' : '';
-});
-
-navLinks.querySelectorAll('a').forEach(link => {
-  link.addEventListener('click', () => {
-    navLinks.classList.remove('open');
-    hamburger.querySelectorAll('span').forEach(s => { s.style.transform = ''; s.style.opacity = ''; });
+  // Watchlist
+  document.getElementById('watchlistBtn').addEventListener('click', () => {
+    if (currentTicker) toggleWatchlist(currentTicker);
   });
-});
-
-// ===========================
-// SCROLL REVEAL
-// ===========================
-const revealObserver = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) { entry.target.classList.add('visible'); revealObserver.unobserve(entry.target); }
+  document.getElementById('clearWatchlist').addEventListener('click', () => {
+    watchlist = [];
+    localStorage.setItem('finmetrics_watchlist', '[]');
+    renderWatchlistGrid();
   });
-}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
 
-document.querySelectorAll('.about-card, .stat-card').forEach(el => {
-  el.classList.add('reveal');
-  revealObserver.observe(el);
-});
+  // Error close
+  document.getElementById('closeError').addEventListener('click', () => hide('errorBanner'));
 
-// ===========================
-// JOIN FORM
-// ===========================
-const joinForm    = document.getElementById('joinForm');
-const joinSuccess = document.getElementById('joinSuccess');
-if (joinForm) {
-  joinForm.addEventListener('submit', (e) => {
-    e.preventDefault();
-    joinForm.style.opacity    = '0';
-    joinForm.style.transform  = 'scale(0.95)';
-    joinForm.style.transition = '0.3s ease';
-    setTimeout(() => { joinForm.classList.add('hidden'); joinSuccess.classList.remove('hidden'); }, 300);
+  // Timeframe
+  document.querySelectorAll('.tf-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (currentTicker) loadChart(currentTicker, btn.dataset.range);
+    });
   });
-}
 
-// ===========================
-// ACTIVE NAV
-// ===========================
-const sections    = document.querySelectorAll('section[id]');
-const navAnchors  = document.querySelectorAll('.nav-links a[href^="#"]');
-const activeObserver = new IntersectionObserver((entries) => {
-  entries.forEach(entry => {
-    if (entry.isIntersecting) {
-      navAnchors.forEach(a => { a.style.color = ''; a.style.background = ''; });
-      const active = document.querySelector(`.nav-links a[href="#${entry.target.id}"]`);
-      if (active) { active.style.color = 'var(--gold)'; active.style.background = 'rgba(240,192,64,0.08)'; }
+  // Financial tabs
+  document.querySelectorAll('.fin-tab').forEach(tab => {
+    tab.addEventListener('click', async () => {
+      document.querySelectorAll('.fin-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      if (!fullData || !currentTicker) return;
+      document.getElementById('finContent').innerHTML =
+        '<p style="padding:20px;color:var(--text-muted)">Loading...</p>';
+      try {
+        const t = tab.dataset.tab;
+        if (t === 'income')   await loadAndRenderTab('ic', INCOME_FIELDS);
+        if (t === 'balance')  await loadAndRenderTab('bs', BALANCE_FIELDS);
+        if (t === 'cashflow') await loadAndRenderTab('cf', CASHFLOW_FIELDS);
+      } catch (e) {
+        document.getElementById('finContent').innerHTML =
+          `<p style="padding:20px;color:var(--red)">${e.message}</p>`;
+      }
+    });
+  });
+
+  // Navbar scroll
+  window.addEventListener('scroll', () => {
+    document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 50);
+  }, { passive: true });
+
+  // Hamburger
+  document.getElementById('hamburger').addEventListener('click', () => {
+    document.getElementById('navLinks').classList.toggle('open');
+  });
+
+  // Theme toggle
+  document.getElementById('themeToggle').addEventListener('click', () => {
+    const html    = document.documentElement;
+    const isLight = html.dataset.theme === 'light';
+    html.dataset.theme = isLight ? 'dark' : 'light';
+    document.getElementById('themeIconSun').style.display  = isLight ? '' : 'none';
+    document.getElementById('themeIconMoon').style.display = isLight ? 'none' : '';
+    localStorage.setItem('finmetrics_theme', html.dataset.theme);
+  });
+
+  // Restore saved theme
+  const savedTheme = localStorage.getItem('finmetrics_theme');
+  if (savedTheme) {
+    document.documentElement.dataset.theme = savedTheme;
+    if (savedTheme === 'light') {
+      document.getElementById('themeIconSun').style.display  = 'none';
+      document.getElementById('themeIconMoon').style.display = '';
     }
-  });
-}, { threshold: 0.4 });
-sections.forEach(s => activeObserver.observe(s));
+  }
 
-// ===========================
-// BOOT
-// ===========================
-loadClubData();
+  renderWatchlistGrid();
+});
