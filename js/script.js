@@ -36,7 +36,7 @@ const fmpQuote     = t => fmpFetch(`/v3/quote/${t}`);
 const fmpMetrics   = t => fmpFetch(`/v3/key-metrics-ttm/${t}`);
 const fmpRatios    = t => fmpFetch(`/v3/ratios-ttm/${t}`);
 const fmpRecs      = t => fmpFetch(`/v3/analyst-stock-recommendations/${t}`);
-const fmpTargets   = t => fmpFetch(`/v3/price-target/${t}`);
+const fmpTargets   = t => fmpFetch(`/v3/price-target/${t}`); 
 const fmpIncome    = t => fmpFetch(`/v3/income-statement/${t}`, { limit: 4 });
 const fmpBalance   = t => fmpFetch(`/v3/balance-sheet-statement/${t}`, { limit: 4 });
 const fmpCashflow  = t => fmpFetch(`/v3/cash-flow-statement/${t}`, { limit: 4 });
@@ -522,9 +522,10 @@ async function searchStock(ticker) {
   document.querySelectorAll('.fin-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
 
   try {
+    // profile and quote errors propagate — bad API key surfaces here instead of silently becoming empty
     const [profileArr, quoteArr, metricsArr, ratiosArr, recsArr, targetsArr, incomeArr, balanceArr, cashflowArr, histData] = await Promise.all([
-      fmpProfile(ticker).catch(() => [{}]),
-      fmpQuote(ticker).catch(() => [{}]),
+      fmpProfile(ticker),
+      fmpQuote(ticker),
       fmpMetrics(ticker).catch(() => [{}]),
       fmpRatios(ticker).catch(() => [{}]),
       fmpRecs(ticker).catch(() => []),
@@ -535,20 +536,23 @@ async function searchStock(ticker) {
       fmpHistory(ticker, 365).catch(() => ({})),
     ]);
 
-    const profile = Array.isArray(profileArr) && profileArr.length ? profileArr[0] : {};
-    const quote   = Array.isArray(quoteArr)   && quoteArr.length   ? quoteArr[0]   : {};
+    const profile = Array.isArray(profileArr) && profileArr.length ? profileArr[0] : null;
+    const quote   = Array.isArray(quoteArr)   && quoteArr.length   ? quoteArr[0]   : null;
 
-    if (!profile.companyName && !quote.symbol) {
+    if (!profile?.companyName && !quote?.symbol) {
       throw new Error(`"${ticker}" not found. Please check the ticker symbol.`);
     }
 
-    fullData = { profile, quote, metrics: metricsArr, ratios: ratiosArr, recs: recsArr, targets: targetsArr, income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
+    const p = profile || {};
+    const q = quote   || {};
 
-    renderHeader(profile, quote, ticker);
-    renderQuickStats(profile, quote, metricsArr, incomeArr);
-    renderKPIs(profile, quote, metricsArr, ratiosArr, recsArr, targetsArr, balanceArr, incomeArr, cashflowArr);
+    fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsArr, targets: targetsArr, income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
 
-    if (histData?.historical?.length) {
+    renderHeader(p, q, ticker);
+    renderQuickStats(p, q, metricsArr, incomeArr);
+    renderKPIs(p, q, metricsArr, ratiosArr, recsArr, targetsArr, balanceArr, incomeArr, cashflowArr);
+
+    if (Array.isArray(histData?.historical) && histData.historical.length) {
       renderChart(histData);
       show('chartSection');
     }
