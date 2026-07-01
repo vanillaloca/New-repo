@@ -1,378 +1,434 @@
 <!DOCTYPE html>
-<html lang="de">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>nk Verdansk – EA FC Pro Clubs</title>
-  <link rel="stylesheet" href="css/style.css" />
+  <title>FinMetrics – Stock KPI Dashboard</title>
+  <meta name="description" content="Comprehensive financial KPI dashboard for stocks. Analyze valuation, profitability, financial health, and growth metrics." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
 
-  <!-- ===== NAVIGATION ===== -->
+  <!-- NAVBAR -->
   <nav class="navbar" id="navbar">
     <div class="nav-container">
-      <div class="nav-logo">
+      <a href="#" class="nav-logo">
         <div class="logo-icon">
-          <svg viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="20" cy="20" r="18" stroke="#f0c040" stroke-width="2"/>
-            <polygon points="20,8 24,16 33,16 26,22 29,31 20,25 11,31 14,22 7,16 16,16" fill="#f0c040"/>
+          <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+            <rect width="28" height="28" rx="6" fill="#00d4ff" fill-opacity="0.15"/>
+            <polyline points="4,20 10,12 16,16 24,6" stroke="#00d4ff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+            <circle cx="24" cy="6" r="2" fill="#00d4ff"/>
           </svg>
         </div>
-        <span class="logo-text">nk <span>Verdansk</span></span>
-      </div>
+        <span class="logo-text">Fin<span class="logo-accent">Metrics</span></span>
+      </a>
       <ul class="nav-links" id="navLinks">
-        <li><a href="#home">Home</a></li>
-        <li><a href="#about">Club</a></li>
-        <li><a href="#squad">Squad</a></li>
-        <li><a href="#stats">Stats</a></li>
-        <li><a href="#matches">Matches</a></li>
-        <li><a href="#join">Beitreten</a></li>
+        <li><a href="#search-section">Search</a></li>
+        <li><a href="#kpis">KPIs</a></li>
+        <li><a href="#financials">Financials</a></li>
+        <li><a href="#watchlist">Watchlist</a></li>
       </ul>
-      <button class="hamburger" id="hamburger" aria-label="Menu">
-        <span></span><span></span><span></span>
-      </button>
+      <div class="nav-actions">
+        <button class="btn-icon" id="themeToggle" title="Toggle theme">
+          <svg id="themeIconSun" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="5"/>
+            <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+            <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+            <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+            <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+          </svg>
+          <svg id="themeIconMoon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+          </svg>
+        </button>
+        <button class="hamburger" id="hamburger" aria-label="Menu">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
     </div>
   </nav>
 
-  <!-- ===== HERO ===== -->
-  <section class="hero" id="home">
+  <!-- HERO / SEARCH -->
+  <section class="hero" id="search-section">
     <div class="hero-bg">
       <div class="hero-grid"></div>
-      <div class="hero-glow hero-glow--left"></div>
-      <div class="hero-glow hero-glow--right"></div>
+      <div class="glow glow-1"></div>
+      <div class="glow glow-2"></div>
     </div>
     <div class="hero-content">
-      <div class="hero-badge">EA FC Pro Clubs</div>
+      <div class="hero-badge">
+        <span class="badge-dot"></span>
+        Live Financial Data
+      </div>
       <h1 class="hero-title">
-        Wir spielen.<br />
-        Wir gewinnen.<br />
-        <span class="hero-title--accent">Wir sind nk Verdansk.</span>
+        Analyze Any Stock's<br/>
+        <span class="gradient-text">Financial KPIs</span>
       </h1>
-      <p class="hero-subtitle">
-        Ein Team. Ein Ziel. Unschlagbar auf dem virtuellen Rasen.
-      </p>
-      <div class="hero-actions">
-        <a href="#join" class="btn btn--primary">Jetzt beitreten</a>
-        <a href="#squad" class="btn btn--outline">Unser Squad</a>
-      </div>
-      <div class="hero-stats">
-        <div class="hero-stat">
-          <span class="hero-stat__number" id="statMember">–</span>
-          <span class="hero-stat__label">Spieler</span>
+      <p class="hero-subtitle">Enter any ticker symbol to get comprehensive financial metrics — valuation ratios, profitability, financial health, growth, and more.</p>
+
+      <div class="search-container">
+        <div class="search-box">
+          <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <input
+            type="text"
+            id="searchInput"
+            class="search-input"
+            placeholder="Enter ticker symbol (e.g. AAPL, MSFT, GOOGL)"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button class="search-btn" id="searchBtn">
+            <span>Analyze</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12,5 19,12 12,19"/>
+            </svg>
+          </button>
         </div>
-        <div class="hero-stat">
-          <span class="hero-stat__number" id="statWins">–</span>
-          <span class="hero-stat__label">Siege</span>
+        <div class="search-suggestions">
+          <span class="suggestion-label">Popular:</span>
+          <button class="suggestion-chip" data-ticker="AAPL">AAPL</button>
+          <button class="suggestion-chip" data-ticker="MSFT">MSFT</button>
+          <button class="suggestion-chip" data-ticker="GOOGL">GOOGL</button>
+          <button class="suggestion-chip" data-ticker="AMZN">AMZN</button>
+          <button class="suggestion-chip" data-ticker="NVDA">NVDA</button>
+          <button class="suggestion-chip" data-ticker="TSLA">TSLA</button>
+          <button class="suggestion-chip" data-ticker="META">META</button>
+          <button class="suggestion-chip" data-ticker="JPM">JPM</button>
         </div>
-        <div class="hero-stat">
-          <span class="hero-stat__number" id="statGoals">–</span>
-          <span class="hero-stat__label">Tore</span>
+
+        <!-- API Key Row -->
+        <div class="apikey-row">
+          <div class="apikey-box">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+            <input type="text" id="apiKeyInput" class="apikey-input" placeholder="FMP API key" autocomplete="off" spellcheck="false" />
+            <button id="saveApiKey" class="apikey-save">Save</button>
+          </div>
+          <p class="apikey-note" id="apiKeyNote">
+            <span id="apiKeyStatus">No key set — enter your free FMP API key to search any stock.</span>
+            &nbsp;<a href="https://financialmodelingprep.com/register" target="_blank" rel="noopener" class="apikey-link">Get free key (30 sec, no credit card) →</a>
+          </p>
         </div>
-        <div class="hero-stat">
-          <span class="hero-stat__number" id="statDiv">–</span>
-          <span class="hero-stat__label">Division</span>
-        </div>
-      </div>
-      <div class="api-status" id="apiStatus"></div>
-    </div>
-    <div class="hero-scroll">
-      <div class="scroll-indicator">
-        <span></span>
       </div>
     </div>
   </section>
 
-  <!-- ===== ABOUT ===== -->
-  <section class="about" id="about">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-tag">Über uns</span>
-        <h2 class="section-title">Der Club hinter dem <span>Ruhm</span></h2>
+  <!-- MAIN DASHBOARD -->
+  <main class="dashboard" id="dashboard">
+
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay" style="display:none">
+      <div class="loading-spinner">
+        <div class="spinner-ring"></div>
+        <p>Fetching financial data...</p>
       </div>
-      <div class="about-grid">
-        <div class="about-card">
-          <div class="about-card__icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
-              <circle cx="9" cy="7" r="4"/>
-              <path d="M23 21v-2a4 4 0 0 0-3-3.87"/>
-              <path d="M16 3.13a4 4 0 0 1 0 7.75"/>
-            </svg>
+    </div>
+
+    <!-- Error Banner -->
+    <div class="error-banner" id="errorBanner" style="display:none">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/>
+        <circle cx="12" cy="16" r="0.5" fill="currentColor"/>
+      </svg>
+      <span id="errorMessage">Unable to fetch data. Please try again.</span>
+      <button id="closeError" class="close-error">×</button>
+    </div>
+
+    <!-- Stock Header -->
+    <div class="stock-header" id="stockHeader" style="display:none">
+      <div class="container">
+        <div class="stock-identity">
+          <div class="stock-logo" id="stockLogo">
+            <span id="stockLogoText">--</span>
           </div>
-          <h3>Echtes Teamplay</h3>
-          <p>Bei uns zählt nicht der Einzelspieler – wir gewinnen als Team. Jeder kennt seine Rolle, jeder gibt alles.</p>
-        </div>
-        <div class="about-card">
-          <div class="about-card__icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/>
-            </svg>
+          <div class="stock-info">
+            <div class="stock-name-row">
+              <h2 class="stock-name" id="stockName">--</h2>
+              <span class="stock-ticker-badge" id="stockTickerBadge">--</span>
+              <span class="stock-exchange" id="stockExchange">--</span>
+            </div>
+            <p class="stock-sector" id="stockSector">--</p>
           </div>
-          <h3>Konstant auf Top-Level</h3>
-          <p>Wöchentliche Trainingseinheiten, Taktikanalysen und eine aktive Community halten uns immer auf dem neuesten Stand.</p>
         </div>
-        <div class="about-card">
-          <div class="about-card__icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="8" r="6"/>
-              <path d="M15.477 12.89L17 22l-5-3-5 3 1.523-9.11"/>
-            </svg>
+        <div class="stock-price-block">
+          <div class="current-price" id="currentPrice">--</div>
+          <div class="price-change" id="priceChange">
+            <span id="changeAmount">--</span>
+            <span class="change-badge" id="changeBadge">--</span>
           </div>
-          <h3>Titel im Fokus</h3>
-          <p>Divisionssiege, Cups, Turniere – wir spielen um zu gewinnen. Jeder Matchday zählt, jedes Tor macht den Unterschied.</p>
+          <div class="price-meta" id="priceDate">--</div>
         </div>
-        <div class="about-card">
-          <div class="about-card__icon">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <div class="stock-actions">
+          <button class="btn-watchlist" id="watchlistBtn" data-ticker="">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
             </svg>
-          </div>
-          <h3>Respektierte Community</h3>
-          <p>Fair play, Respekt und Spaß am Spiel – das sind unsere Werte, innerhalb und außerhalb des Spielfelds.</p>
+            Add to Watchlist
+          </button>
         </div>
       </div>
     </div>
-  </section>
 
-  <!-- ===== SQUAD ===== -->
-  <section class="squad" id="squad">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-tag">Die Mannschaft</span>
-        <h2 class="section-title">Unser <span>Squad</span></h2>
-      </div>
-      <div class="squad-filters">
-        <button class="filter-btn active" data-filter="all">Alle</button>
-        <button class="filter-btn" data-filter="gk">TW</button>
-        <button class="filter-btn" data-filter="def">Abwehr</button>
-        <button class="filter-btn" data-filter="mid">Mittelfeld</button>
-        <button class="filter-btn" data-filter="att">Angriff</button>
-      </div>
-      <div class="squad-grid" id="squadGrid">
-        <div class="squad-loading">
-          <div class="spinner"></div>
-          <p>Lade Spielerdaten von EA...</p>
+    <!-- Price Chart -->
+    <section class="chart-section" id="chartSection" style="display:none">
+      <div class="container">
+        <div class="section-header">
+          <h3 class="section-title">Price History</h3>
+          <div class="timeframe-buttons">
+            <button class="tf-btn" data-range="5d">5D</button>
+            <button class="tf-btn" data-range="1mo">1M</button>
+            <button class="tf-btn" data-range="3mo">3M</button>
+            <button class="tf-btn" data-range="6mo">6M</button>
+            <button class="tf-btn active" data-range="1y">1Y</button>
+            <button class="tf-btn" data-range="5y">5Y</button>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="priceChart"></canvas>
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- ===== STATS ===== -->
-  <section class="stats-section" id="stats">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-tag">Leistung</span>
-        <h2 class="section-title">Club <span>Statistiken</span></h2>
-      </div>
-      <div class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-card__circle">
-            <svg viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#1a1a2e" stroke-width="12"/>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#f0c040" stroke-width="12"
-                stroke-dasharray="327" stroke-dashoffset="327" stroke-linecap="round"
-                transform="rotate(-90 60 60)" class="stat-ring" id="ringWinRate"/>
-            </svg>
-            <div class="stat-card__value" id="valWinRate">–</div>
+    <!-- Quick Stats Bar -->
+    <section class="quick-stats" id="quickStats" style="display:none">
+      <div class="container">
+        <div class="stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">Market Cap</span>
+            <span class="stat-value" id="statMarketCap">--</span>
           </div>
-          <h3>Win Rate</h3>
-          <p id="labelWinRate">Wird geladen...</p>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card__circle">
-            <svg viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#1a1a2e" stroke-width="12"/>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#4a9eff" stroke-width="12"
-                stroke-dasharray="327" stroke-dashoffset="327" stroke-linecap="round"
-                transform="rotate(-90 60 60)" class="stat-ring" id="ringGoals"/>
-            </svg>
-            <div class="stat-card__value" id="valGoals">–</div>
+          <div class="stat-card">
+            <span class="stat-label">P/E Ratio (TTM)</span>
+            <span class="stat-value" id="statPE">--</span>
           </div>
-          <h3>Tore</h3>
-          <p id="labelGoals">Gesamt</p>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card__circle">
-            <svg viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#1a1a2e" stroke-width="12"/>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#a855f7" stroke-width="12"
-                stroke-dasharray="327" stroke-dashoffset="327" stroke-linecap="round"
-                transform="rotate(-90 60 60)" class="stat-ring" id="ringSeason"/>
-            </svg>
-            <div class="stat-card__value" id="valSeason">–</div>
+          <div class="stat-card">
+            <span class="stat-label">EPS (TTM)</span>
+            <span class="stat-value" id="statEPS">--</span>
           </div>
-          <h3>Saisonsiege</h3>
-          <p id="labelSeason">Aktuelle Saison</p>
-        </div>
-        <div class="stat-card">
-          <div class="stat-card__circle">
-            <svg viewBox="0 0 120 120">
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#1a1a2e" stroke-width="12"/>
-              <circle cx="60" cy="60" r="52" fill="none" stroke="#22c55e" stroke-width="12"
-                stroke-dasharray="327" stroke-dashoffset="327" stroke-linecap="round"
-                transform="rotate(-90 60 60)" class="stat-ring" id="ringGames"/>
-            </svg>
-            <div class="stat-card__value" id="valGames">–</div>
+          <div class="stat-card">
+            <span class="stat-label">Revenue (TTM)</span>
+            <span class="stat-value" id="statRevenue">--</span>
           </div>
-          <h3>Spiele</h3>
-          <p>Gesamt</p>
+          <div class="stat-card">
+            <span class="stat-label">Net Income</span>
+            <span class="stat-value" id="statNetIncome">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Free Cash Flow</span>
+            <span class="stat-value" id="statFCF">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Dividend Yield</span>
+            <span class="stat-value" id="statDivYield">--</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">Beta</span>
+            <span class="stat-value" id="statBeta">--</span>
+          </div>
         </div>
       </div>
+    </section>
 
-      <div class="stats-bar-section">
-        <h3 class="stats-bar-title">Top Scorer</h3>
-        <div class="stats-bars" id="topScorers">
-          <div class="squad-loading">
-            <div class="spinner"></div>
-            <p>Lade Scorerdaten...</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  </section>
+    <!-- KPI Grid -->
+    <section class="kpi-section" id="kpis" style="display:none">
+      <div class="container">
+        <h3 class="section-heading">Key Performance Indicators</h3>
+        <div class="kpi-grid">
 
-  <!-- ===== MATCHES ===== -->
-  <section class="matches" id="matches">
-    <div class="container">
-      <div class="section-header">
-        <span class="section-tag">Spielplan</span>
-        <h2 class="section-title">Letzte <span>Spiele</span></h2>
-      </div>
-      <div class="match-list" id="matchList">
-        <div class="squad-loading">
-          <div class="spinner"></div>
-          <p>Lade Spielergebnisse...</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ===== JOIN ===== -->
-  <section class="join" id="join">
-    <div class="join-bg">
-      <div class="join-glow"></div>
-    </div>
-    <div class="container">
-      <div class="join-content">
-        <div class="section-tag">Werde Teil des Teams</div>
-        <h2 class="join-title">Bereit, Geschichte zu<br/><span>schreiben?</span></h2>
-        <p class="join-subtitle">
-          Wir suchen motivierte Spieler, die Teamgeist mitbringen und auf höchstem Niveau spielen wollen. Bewirb dich jetzt und werde Teil von nk Verdansk.
-        </p>
-        <div class="join-requirements">
-          <div class="requirement">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            Mindest-Rating: 85+
-          </div>
-          <div class="requirement">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            Mikrofon & Discord erforderlich
-          </div>
-          <div class="requirement">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            Mindestalter: 16 Jahre
-          </div>
-          <div class="requirement">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-            2× pro Woche verfügbar
-          </div>
-        </div>
-        <form class="join-form" id="joinForm">
-          <div class="form-row">
-            <div class="form-group">
-              <label>PSN / Gamertag</label>
-              <input type="text" placeholder="Dein Gamertag" required />
+          <!-- Valuation -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-valuation">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="12" y1="1" x2="12" y2="23"/>
+                  <path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Valuation</h4>
             </div>
-            <div class="form-group">
-              <label>Position</label>
-              <select>
-                <option value="">Position wählen...</option>
-                <option>Torwart</option>
-                <option>Innenverteidiger</option>
-                <option>Rechtsverteidiger</option>
-                <option>Linksverteidiger</option>
-                <option>Defensives Mittelfeld</option>
-                <option>Zentrales Mittelfeld</option>
-                <option>Offensives Mittelfeld</option>
-                <option>Rechtsaußen</option>
-                <option>Linksaußen</option>
-                <option>Mittelstürmer</option>
-              </select>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">P/E Ratio (TTM)</span><span class="kpi-value" id="kpiPE">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Forward P/E</span><span class="kpi-value" id="kpiForwardPE">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">PEG Ratio</span><span class="kpi-value" id="kpiPEG">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Price / Book</span><span class="kpi-value" id="kpiPB">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Price / Sales</span><span class="kpi-value" id="kpiPS">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">EV / EBITDA</span><span class="kpi-value" id="kpiEVEBITDA">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Enterprise Value</span><span class="kpi-value" id="kpiEV">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Book Value / Share</span><span class="kpi-value" id="kpiBookValue">--</span></div>
             </div>
           </div>
-          <div class="form-group">
-            <label>Discord</label>
-            <input type="text" placeholder="Dein Discord-Tag" />
+
+          <!-- Profitability -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-profit">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/>
+                  <polyline points="17 6 23 6 23 12"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Profitability</h4>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">Gross Margin</span><span class="kpi-value" id="kpiGrossMargin">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Operating Margin</span><span class="kpi-value" id="kpiOpMargin">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Net Profit Margin</span><span class="kpi-value" id="kpiNetMargin">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">EBITDA</span><span class="kpi-value" id="kpiEBITDA">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">EBITDA Margin</span><span class="kpi-value" id="kpiEBITDAMargin">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Return on Equity</span><span class="kpi-value" id="kpiROE">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Return on Assets</span><span class="kpi-value" id="kpiROA">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Return on Capital</span><span class="kpi-value" id="kpiROIC">--</span></div>
+            </div>
           </div>
-          <div class="form-group">
-            <label>Warum willst du zu uns? (Optional)</label>
-            <textarea placeholder="Erzähl uns von dir..." rows="3"></textarea>
+
+          <!-- Financial Health -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-health">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Financial Health</h4>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">Total Revenue (TTM)</span><span class="kpi-value" id="kpiRevenue">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Net Income (TTM)</span><span class="kpi-value" id="kpiNetIncome">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Total Cash</span><span class="kpi-value" id="kpiTotalCash">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Total Debt</span><span class="kpi-value" id="kpiTotalDebt">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Debt / Equity</span><span class="kpi-value" id="kpiDebtEquity">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Current Ratio</span><span class="kpi-value" id="kpiCurrentRatio">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Quick Ratio</span><span class="kpi-value" id="kpiQuickRatio">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Free Cash Flow</span><span class="kpi-value" id="kpiFCF">--</span></div>
+            </div>
           </div>
-          <button type="submit" class="btn btn--primary btn--full">Bewerbung absenden</button>
-        </form>
-        <div class="join-success hidden" id="joinSuccess">
-          <svg viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="20 6 9 17 4 12"/></svg>
-          <h3>Bewerbung eingegangen!</h3>
-          <p>Wir melden uns innerhalb von 48 Stunden bei dir.</p>
+
+          <!-- Growth & Dividends -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-growth">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Growth &amp; Dividends</h4>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">Revenue Growth (YoY)</span><span class="kpi-value" id="kpiRevenueGrowth">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Earnings Growth (YoY)</span><span class="kpi-value" id="kpiEarningsGrowth">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">EPS (TTM)</span><span class="kpi-value" id="kpiEPS">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Forward EPS</span><span class="kpi-value" id="kpiForwardEPS">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Dividend Yield</span><span class="kpi-value" id="kpiDivYield">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Annual Dividend</span><span class="kpi-value" id="kpiDivRate">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Payout Ratio</span><span class="kpi-value" id="kpiPayoutRatio">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Ex-Dividend Date</span><span class="kpi-value" id="kpiExDivDate">--</span></div>
+            </div>
+          </div>
+
+          <!-- Market Data -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-market">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <line x1="8" y1="21" x2="16" y2="21"/>
+                  <line x1="12" y1="17" x2="12" y2="21"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Market Data</h4>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">52-Week High</span><span class="kpi-value positive" id="kpi52High">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">52-Week Low</span><span class="kpi-value negative" id="kpi52Low">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">50-Day MA</span><span class="kpi-value" id="kpi50MA">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">200-Day MA</span><span class="kpi-value" id="kpi200MA">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Volume</span><span class="kpi-value" id="kpiVolume">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Avg Volume</span><span class="kpi-value" id="kpiAvgVolume">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Shares Outstanding</span><span class="kpi-value" id="kpiShares">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Float</span><span class="kpi-value" id="kpiFloat">--</span></div>
+            </div>
+          </div>
+
+          <!-- Analyst Consensus -->
+          <div class="kpi-card">
+            <div class="kpi-card-header">
+              <div class="kpi-card-icon icon-analyst">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+                  <circle cx="9" cy="7" r="4"/>
+                  <path d="M23 21v-2a4 4 0 00-3-3.87"/>
+                  <path d="M16 3.13a4 4 0 010 7.75"/>
+                </svg>
+              </div>
+              <h4 class="kpi-card-title">Analyst Consensus</h4>
+            </div>
+            <div class="kpi-list">
+              <div class="kpi-item"><span class="kpi-name">Recommendation</span><span class="kpi-value" id="kpiRecommendation">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Analyst Rating</span><span class="kpi-value" id="kpiRating">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Target Price (Mean)</span><span class="kpi-value" id="kpiTargetPrice">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Target High</span><span class="kpi-value positive" id="kpiTargetHigh">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Target Low</span><span class="kpi-value negative" id="kpiTargetLow">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Upside Potential</span><span class="kpi-value" id="kpiUpside">--</span></div>
+              <div class="kpi-item"><span class="kpi-name"># of Analysts</span><span class="kpi-value" id="kpiAnalystCount">--</span></div>
+              <div class="kpi-item"><span class="kpi-name">Short Ratio</span><span class="kpi-value" id="kpiShortRatio">--</span></div>
+            </div>
+          </div>
+
         </div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <!-- ===== FOOTER ===== -->
+    <!-- Financial Statements -->
+    <section class="financials-section" id="financials" style="display:none">
+      <div class="container">
+        <h3 class="section-heading">Financial Statements</h3>
+        <div class="fin-tabs">
+          <button class="fin-tab active" data-tab="income">Income Statement</button>
+          <button class="fin-tab" data-tab="balance">Balance Sheet</button>
+          <button class="fin-tab" data-tab="cashflow">Cash Flow</button>
+        </div>
+        <div class="fin-content" id="finContent"></div>
+      </div>
+    </section>
+
+    <!-- Watchlist -->
+    <section class="watchlist-section" id="watchlist">
+      <div class="container">
+        <div class="watchlist-header">
+          <h3 class="section-heading">My Watchlist</h3>
+          <button class="btn-clear-watchlist" id="clearWatchlist">Clear All</button>
+        </div>
+        <div class="watchlist-grid" id="watchlistGrid">
+          <div class="watchlist-empty" id="watchlistEmpty">
+            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+            <p>Your watchlist is empty. Search a stock and click “Add to Watchlist”.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- FOOTER -->
   <footer class="footer">
     <div class="container">
-      <div class="footer-grid">
+      <div class="footer-content">
         <div class="footer-brand">
-          <div class="nav-logo">
-            <div class="logo-icon">
-              <svg viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="18" stroke="#f0c040" stroke-width="2"/><polygon points="20,8 24,16 33,16 26,22 29,31 20,25 11,31 14,22 7,16 16,16" fill="#f0c040"/></svg>
-            </div>
-            <span class="logo-text">nk <span>Verdansk</span></span>
-          </div>
-          <p>nk Verdansk – eines der stärksten Pro Club Teams auf der Plattform. Kapitän: Tim Kuhn.</p>
+          <span class="logo-text">Fin<span class="logo-accent">Metrics</span></span>
+          <p>Financial data powered by <a href="https://financialmodelingprep.com" target="_blank" rel="noopener" style="color:var(--cyan);text-decoration:none">Financial Modeling Prep</a> with Yahoo Finance fallback. For informational purposes only.</p>
         </div>
-        <div class="footer-links">
-          <h4>Navigation</h4>
-          <ul>
-            <li><a href="#home">Home</a></li>
-            <li><a href="#about">Club</a></li>
-            <li><a href="#squad">Squad</a></li>
-            <li><a href="#stats">Stats</a></li>
-            <li><a href="#matches">Matches</a></li>
-          </ul>
+        <div class="footer-note">
+          <p>Data may be delayed. Not financial advice.</p>
+          <p>© 2025 FinMetrics</p>
         </div>
-        <div class="footer-links">
-          <h4>Community</h4>
-          <ul>
-            <li><a href="#join">Discord beitreten</a></li>
-            <li><a href="#join">Bewerben</a></li>
-            <li><a href="#">Twitch</a></li>
-            <li><a href="#">YouTube</a></li>
-          </ul>
-        </div>
-        <div class="footer-contact">
-          <h4>Kontakt</h4>
-          <p>Kapitän: Tim Kuhn</p>
-          <p>Club ID: 598236</p>
-          <div class="social-links">
-            <a href="#" class="social-link" aria-label="Discord">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057.1 18.079.11 18.1.13 18.115a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994a.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03z"/></svg>
-            </a>
-            <a href="#" class="social-link" aria-label="Instagram">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2.163c3.204 0 3.584.012 4.85.07 3.252.148 4.771 1.691 4.919 4.919.058 1.265.069 1.645.069 4.849 0 3.205-.012 3.584-.069 4.849-.149 3.225-1.664 4.771-4.919 4.919-1.266.058-1.644.07-4.85.07-3.204 0-3.584-.012-4.849-.07-3.26-.149-4.771-1.699-4.919-4.92-.058-1.265-.07-1.644-.07-4.849 0-3.204.013-3.583.07-4.849.149-3.227 1.664-4.771 4.919-4.919 1.266-.057 1.645-.069 4.849-.069zM12 0C8.741 0 8.333.014 7.053.072 2.695.272.273 2.69.073 7.052.014 8.333 0 8.741 0 12c0 3.259.014 3.668.072 4.948.2 4.358 2.618 6.78 6.98 6.98C8.333 23.986 8.741 24 12 24c3.259 0 3.668-.014 4.948-.072 4.354-.2 6.782-2.618 6.979-6.98.059-1.28.073-1.689.073-4.948 0-3.259-.014-3.667-.072-4.947-.196-4.354-2.617-6.78-6.979-6.98C15.668.014 15.259 0 12 0zm0 5.838a6.162 6.162 0 1 0 0 12.324 6.162 6.162 0 0 0 0-12.324zM12 16a4 4 0 1 1 0-8 4 4 0 0 1 0 8zm6.406-11.845a1.44 1.44 0 1 0 0 2.881 1.44 1.44 0 0 0 0-2.881z"/></svg>
-            </a>
-            <a href="#" class="social-link" aria-label="YouTube">
-              <svg viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>
-            </a>
-          </div>
-        </div>
-      </div>
-      <div class="footer-bottom">
-        <p>&copy; 2026 nk Verdansk. Alle Rechte vorbehalten.</p>
-        <p class="footer-disclaimer">Nicht offiziell mit EA Sports verbunden.</p>
       </div>
     </div>
   </footer>
