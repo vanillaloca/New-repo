@@ -36,7 +36,7 @@ const fmpQuote     = t => fmpFetch(`/v3/quote/${t}`);
 const fmpMetrics   = t => fmpFetch(`/v3/key-metrics-ttm/${t}`);
 const fmpRatios    = t => fmpFetch(`/v3/ratios-ttm/${t}`);
 const fmpRecs      = t => fmpFetch(`/v3/analyst-stock-recommendations/${t}`);
-const fmpTargets   = t => fmpFetch(`/v3/price-target/${t}`); 
+const fmpTargets   = t => fmpFetch(`/v3/price-target-consensus/${t}`);
 const fmpIncome    = t => fmpFetch(`/v3/income-statement/${t}`, { limit: 4 });
 const fmpBalance   = t => fmpFetch(`/v3/balance-sheet-statement/${t}`, { limit: 4 });
 const fmpCashflow  = t => fmpFetch(`/v3/cash-flow-statement/${t}`, { limit: 4 });
@@ -148,15 +148,16 @@ function renderHeader(profile, quote, ticker) {
 // Render: Quick Stats
 // ============================================================
 
-function renderQuickStats(profile, quote, metrics, income) {
-  const latestIncome = Array.isArray(income) && income.length ? income[0] : {};
+function renderQuickStats(profile, quote, metrics, income, cashflow) {
+  const latestIncome   = Array.isArray(income)   && income.length   ? income[0]   : {};
+  const latestCashflow = Array.isArray(cashflow) && cashflow.length ? cashflow[0] : {};
 
   setText('statMarketCap', fmtCurrency(profile.mktCap));
   setText('statPE',        fmtRatio(quote.pe));
   setText('statEPS',       fmtPrice(quote.eps));
   setText('statRevenue',   fmtCurrency(latestIncome.revenue));
   setText('statNetIncome', fmtCurrency(latestIncome.netIncome));
-  setText('statFCF',       fmtCurrency(latestIncome.operatingCashflow || latestIncome.freeCashFlow));
+  setText('statFCF',       fmtCurrency(latestCashflow.freeCashFlow || latestCashflow.operatingCashFlow));
   setText('statDivYield', profile.lastDiv > 0 && profile.price > 0
     ? fmtPctDirect((profile.lastDiv / profile.price) * 100) : 'N/A');
   setText('statBeta', profile.beta != null ? parseFloat(profile.beta).toFixed(2) : 'N/A');
@@ -179,10 +180,10 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
   // -- Valuation --
   setText('kpiPE',        fmtRatio(quote.pe || m.peRatioTTM));
   setText('kpiForwardPE', fmtRatio(m.forwardPE || r.forwardPE || (curPrice && quote.eps ? curPrice / parseFloat(quote.eps) : null)));
-  setText('kpiPEG',       fmtRatio(m.pegRatioTTM));
+  setText('kpiPEG',       fmtRatio(m.pegRatioTTM || r.priceEarningsToGrowthRatioTTM));
   setText('kpiPB',        fmtRatio(m.pbRatioTTM || r.priceToBookRatioTTM));
   setText('kpiPS',        fmtRatio(m.priceToSalesRatioTTM || r.priceToSalesRatioTTM));
-  setText('kpiEVEBITDA',  fmtRatio(m.evToEbitdaTTM || r.enterpriseValueMultipleTTM));
+  setText('kpiEVEBITDA',  fmtRatio(m.evToEbitdaTTM || m.enterpriseValueOverEBITDATTM || r.enterpriseValueMultipleTTM));
   setText('kpiEV',        fmtCurrency(m.enterpriseValueTTM));
   setText('kpiBookValue', fmtPrice(m.bookValuePerShareTTM));
 
@@ -194,9 +195,9 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
     setColored(id, pct.toFixed(2) + '%', pct > 0);
   };
 
-  setMargin('kpiGrossMargin',  m.grossProfitMarginTTM  || r.grossProfitMarginTTM);
+  setMargin('kpiGrossMargin',  m.grossProfitMarginTTM     || r.grossProfitMarginTTM);
   setMargin('kpiOpMargin',     m.operatingProfitMarginTTM || r.operatingProfitMarginTTM);
-  setMargin('kpiNetMargin',    m.netProfitMarginTTM    || r.netProfitMarginTTM);
+  setMargin('kpiNetMargin',    m.netProfitMarginTTM       || r.netProfitMarginTTM);
 
   setText('kpiEBITDA', fmtCurrency(ic.ebitda));
   if (ic.ebitda && ic.revenue && parseFloat(ic.revenue) !== 0) {
@@ -266,11 +267,12 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
   // -- Analyst Consensus --
   const latestRec = Array.isArray(recs) && recs.length ? recs[0] : null;
   if (latestRec) {
-    const sb    = latestRec.strongBuy  || 0;
-    const b2    = latestRec.buy        || 0;
-    const h     = latestRec.hold       || 0;
-    const s     = latestRec.sell       || 0;
-    const ss    = latestRec.strongSell || 0;
+    // FMP has used both naming schemes on this endpoint at different times
+    const sb    = latestRec.analystRatingsStrongBuy  ?? latestRec.strongBuy  ?? 0;
+    const b2    = latestRec.analystRatingsBuy        ?? latestRec.buy        ?? 0;
+    const h     = latestRec.analystRatingsHold       ?? latestRec.hold       ?? 0;
+    const s     = latestRec.analystRatingsSell       ?? latestRec.sell       ?? 0;
+    const ss    = latestRec.analystRatingsStrongSell ?? latestRec.strongSell ?? 0;
     const total = sb + b2 + h + s + ss;
     const buyPct = total ? (sb + b2) / total : 0;
 
@@ -300,7 +302,6 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
     setText('kpiTargetLow',   fmtPrice(t.targetLow));
     if (upside != null) setColored('kpiUpside', (upside >= 0 ? '+' : '') + (upside * 100).toFixed(2) + '%', upside > 0);
     else setText('kpiUpside', 'N/A');
-    if (t.numberOfAnalysts) setText('kpiAnalystCount', String(t.numberOfAnalysts));
   } else {
     ['kpiTargetPrice', 'kpiTargetHigh', 'kpiTargetLow', 'kpiUpside'].forEach(id => setText(id, 'N/A'));
   }
@@ -549,12 +550,16 @@ async function searchStock(ticker) {
     fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsArr, targets: targetsArr, income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
 
     renderHeader(p, q, ticker);
-    renderQuickStats(p, q, metricsArr, incomeArr);
+    renderQuickStats(p, q, metricsArr, incomeArr, cashflowArr);
     renderKPIs(p, q, metricsArr, ratiosArr, recsArr, targetsArr, balanceArr, incomeArr, cashflowArr);
 
     if (Array.isArray(histData?.historical) && histData.historical.length) {
-      renderChart(histData);
-      show('chartSection');
+      try {
+        renderChart(histData);
+        show('chartSection');
+      } catch (e) {
+        console.warn('Chart render failed:', e.message);
+      }
     }
 
     show('financials');
