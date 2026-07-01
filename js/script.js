@@ -1,9 +1,11 @@
 'use strict';
 
 // ============================================================
-// Config — Financial Modeling Prep (FMP) API
+// Config — Financial Modeling Prep (FMP) stable API
+// Legacy /api/v3 endpoints are rejected for accounts created
+// after mid-2025, so everything here uses /stable.
 // ============================================================
-const FMP_BASE = 'https://financialmodelingprep.com/api';
+const FMP_BASE = 'https://financialmodelingprep.com';
 
 let currentTicker = '';
 let fullData      = null;
@@ -23,24 +25,40 @@ async function fmpFetch(path, params = {}) {
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
   const res = await fetch(url.toString());
-  if (res.status === 401 || res.status === 403) throw new Error('Invalid API key. Get your free key at financialmodelingprep.com and enter it above.');
-  if (res.status === 429) throw new Error('Rate limit hit. Wait a moment and try again.');
-  if (!res.ok) throw new Error(`API error: HTTP ${res.status}`);
-  const data = await res.json();
-  if (data?.['Error Message']) throw new Error(data['Error Message']);
+
+  // FMP puts its real diagnosis in the body even on error statuses — surface it
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  const apiMsg = data && !Array.isArray(data)
+    ? (data['Error Message'] || data.message || data.error) : null;
+
+  if (!res.ok) {
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(apiMsg || 'FMP rejected the API key. Double-check it at financialmodelingprep.com → Dashboard.');
+    }
+    if (res.status === 402) throw new Error(apiMsg || 'This data requires a paid FMP plan.');
+    if (res.status === 429) throw new Error('Rate limit hit (250 requests/day on the free plan). Try again later.');
+    throw new Error(apiMsg || `API error: HTTP ${res.status}`);
+  }
+  if (apiMsg) throw new Error(apiMsg);
   return data;
 }
 
-const fmpProfile   = t => fmpFetch(`/v3/profile/${t}`);
-const fmpQuote     = t => fmpFetch(`/v3/quote/${t}`);
-const fmpMetrics   = t => fmpFetch(`/v3/key-metrics-ttm/${t}`);
-const fmpRatios    = t => fmpFetch(`/v3/ratios-ttm/${t}`);
-const fmpRecs      = t => fmpFetch(`/v3/analyst-stock-recommendations/${t}`);
-const fmpTargets   = t => fmpFetch(`/v3/price-target-consensus/${t}`);
-const fmpIncome    = t => fmpFetch(`/v3/income-statement/${t}`, { limit: 4 });
-const fmpBalance   = t => fmpFetch(`/v3/balance-sheet-statement/${t}`, { limit: 4 });
-const fmpCashflow  = t => fmpFetch(`/v3/cash-flow-statement/${t}`, { limit: 4 });
-const fmpHistory   = (t, days) => fmpFetch(`/v3/historical-price-full/${t}`, { timeseries: days, serietype: 'line' });
+const fmpProfile   = t => fmpFetch('/stable/profile',                 { symbol: t });
+const fmpQuote     = t => fmpFetch('/stable/quote',                   { symbol: t });
+const fmpMetrics   = t => fmpFetch('/stable/key-metrics-ttm',         { symbol: t });
+const fmpRatios    = t => fmpFetch('/stable/ratios-ttm',              { symbol: t });
+const fmpRecs      = t => fmpFetch('/stable/grades-consensus',        { symbol: t });
+const fmpTargets   = t => fmpFetch('/stable/price-target-consensus',  { symbol: t });
+const fmpFloat     = t => fmpFetch('/stable/shares-float',            { symbol: t });
+const fmpDividends = t => fmpFetch('/stable/dividends',               { symbol: t });
+const fmpIncome    = t => fmpFetch('/stable/income-statement',        { symbol: t, limit: 4 });
+const fmpBalance   = t => fmpFetch('/stable/balance-sheet-statement', { symbol: t, limit: 4 });
+const fmpCashflow  = t => fmpFetch('/stable/cash-flow-statement',     { symbol: t, limit: 4 });
+const fmpHistory   = (t, days) => {
+  const from = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+  return fmpFetch('/stable/historical-price-eod/light', { symbol: t, from });
+};
 
 // ============================================================
 // Formatters
@@ -61,6 +79,7 @@ function fmtCurrency(v)  { const s = fmtBig(v); return s === 'N/A' ? 'N/A' : '$'
 function fmtPrice(v)     { const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : '$' + n.toFixed(2); }
 function fmtRatio(v, d=2){ const n = parseFloat(v); return (v == null || isNaN(n)) ? 'N/A' : n.toFixed(d) + 'x'; }
 
+// FMP margins/ratios as decimals: 0.4413 = 44.13%
 function fmtPctDecimal(v, d=2) {
   const n = parseFloat(v);
   return (v == null || isNaN(n)) ? 'N/A' : (n * 100).toFixed(d) + '%';
@@ -76,6 +95,15 @@ function fmtDate(v) {
   const d = new Date(v);
   if (isNaN(d)) return 'N/A';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
+// First value that parses to a finite number, else null
+function pick(...vals) {
+  for (const v of vals) {
+    const n = parseFloat(v);
+    if (v != null && !isNaN(n)) return n;
+  }
+  return null;
 }
 
 // ============================================================
@@ -102,14 +130,14 @@ function hide(id) { const el = document.getElementById(id); if (el) el.style.dis
 // ============================================================
 
 function renderHeader(profile, quote, ticker) {
-  const price  = parseFloat(quote.price);
-  const change = parseFloat(quote.change);
-  const pct    = parseFloat(quote.changesPercentage);
-  const isUp   = change >= 0;
+  const price  = pick(quote.price, profile.price);
+  const change = pick(quote.change, profile.change);
+  const pct    = pick(quote.changesPercentage, quote.changePercentage, profile.changePercentage);
+  const isUp   = (change ?? 0) >= 0;
 
-  setText('stockName',        profile.companyName || ticker);
+  setText('stockName',        profile.companyName || quote.name || ticker);
   setText('stockTickerBadge', ticker);
-  setText('stockExchange',    profile.exchangeShortName || profile.exchange || '');
+  setText('stockExchange',    profile.exchangeShortName || profile.exchange || quote.exchange || '');
   setText('stockSector',      profile.sector || profile.industry || 'Equity');
 
   const logoContainer = document.getElementById('stockLogo');
@@ -123,16 +151,16 @@ function renderHeader(profile, quote, ticker) {
     }
   }
 
-  setText('currentPrice', isNaN(price) ? 'N/A' : '$' + price.toFixed(2));
+  setText('currentPrice', price == null ? 'N/A' : '$' + price.toFixed(2));
 
   const changeEl = document.getElementById('priceChange');
   if (changeEl) changeEl.className = 'price-change ' + (isUp ? 'positive' : 'negative');
 
-  setText('changeAmount', (isUp ? '+' : '') + (isNaN(change) ? '0.00' : '$' + Math.abs(change).toFixed(2)));
+  setText('changeAmount', (isUp ? '+' : '-') + (change == null ? '0.00' : '$' + Math.abs(change).toFixed(2)));
 
   const badge = document.getElementById('changeBadge');
   if (badge) {
-    badge.textContent = (isUp ? '+' : '') + (isNaN(pct) ? '0.00' : pct.toFixed(2)) + '%';
+    badge.textContent = (isUp ? '+' : '') + (pct == null ? '0.00' : pct.toFixed(2)) + '%';
     badge.className   = 'change-badge ' + (isUp ? 'positive' : 'negative');
   }
 
@@ -148,19 +176,26 @@ function renderHeader(profile, quote, ticker) {
 // Render: Quick Stats
 // ============================================================
 
-function renderQuickStats(profile, quote, metrics, income, cashflow) {
-  const latestIncome   = Array.isArray(income)   && income.length   ? income[0]   : {};
-  const latestCashflow = Array.isArray(cashflow) && cashflow.length ? cashflow[0] : {};
+function renderQuickStats(profile, quote, metrics, ratios, income, cashflow) {
+  const ic = Array.isArray(income)   && income.length   ? income[0]   : {};
+  const cf = Array.isArray(cashflow) && cashflow.length ? cashflow[0] : {};
+  const m  = Array.isArray(metrics)  && metrics.length  ? metrics[0]  : {};
+  const r  = Array.isArray(ratios)   && ratios.length   ? ratios[0]   : {};
 
-  setText('statMarketCap', fmtCurrency(profile.mktCap));
-  setText('statPE',        fmtRatio(quote.pe));
-  setText('statEPS',       fmtPrice(quote.eps));
-  setText('statRevenue',   fmtCurrency(latestIncome.revenue));
-  setText('statNetIncome', fmtCurrency(latestIncome.netIncome));
-  setText('statFCF',       fmtCurrency(latestCashflow.freeCashFlow || latestCashflow.operatingCashFlow));
-  setText('statDivYield', profile.lastDiv > 0 && profile.price > 0
-    ? fmtPctDirect((profile.lastDiv / profile.price) * 100) : 'N/A');
-  setText('statBeta', profile.beta != null ? parseFloat(profile.beta).toFixed(2) : 'N/A');
+  const price   = pick(quote.price, profile.price);
+  const eps     = pick(quote.eps, ic.epsDiluted, ic.epsdiluted, ic.eps);
+  const pe      = pick(quote.pe, r.priceToEarningsRatioTTM, m.peRatioTTM,
+                       price != null && eps ? price / eps : null);
+  const lastDiv = pick(profile.lastDiv, profile.lastDividend);
+
+  setText('statMarketCap', fmtCurrency(pick(profile.mktCap, profile.marketCap, quote.marketCap)));
+  setText('statPE',        fmtRatio(pe));
+  setText('statEPS',       fmtPrice(eps));
+  setText('statRevenue',   fmtCurrency(ic.revenue));
+  setText('statNetIncome', fmtCurrency(ic.netIncome));
+  setText('statFCF',       fmtCurrency(pick(cf.freeCashFlow, cf.operatingCashFlow, cf.netCashProvidedByOperatingActivities)));
+  setText('statDivYield',  lastDiv > 0 && price > 0 ? fmtPctDirect((lastDiv / price) * 100) : 'N/A');
+  setText('statBeta',      profile.beta != null ? parseFloat(profile.beta).toFixed(2) : 'N/A');
 
   show('quickStats');
 }
@@ -169,47 +204,60 @@ function renderQuickStats(profile, quote, metrics, income, cashflow) {
 // Render: KPI Cards
 // ============================================================
 
-function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, income, cashflow) {
-  const m  = Array.isArray(metrics) && metrics.length ? metrics[0] : {};
-  const r  = Array.isArray(ratios)  && ratios.length  ? ratios[0]  : {};
-  const b  = Array.isArray(balance) && balance.length ? balance[0] : {};
-  const ic = Array.isArray(income)  && income.length  ? income[0]  : {};
-  const cf = Array.isArray(cashflow)&& cashflow.length? cashflow[0]: {};
-  const curPrice = parseFloat(quote.price);
+function renderKPIs(profile, quote, metrics, ratios, recs, targets, floatData, dividends, balance, income, cashflow) {
+  const m    = Array.isArray(metrics)   && metrics.length   ? metrics[0]   : {};
+  const r    = Array.isArray(ratios)    && ratios.length    ? ratios[0]    : {};
+  const b    = Array.isArray(balance)   && balance.length   ? balance[0]   : {};
+  const ic   = Array.isArray(income)    && income.length    ? income[0]    : {};
+  const cf   = Array.isArray(cashflow)  && cashflow.length  ? cashflow[0]  : {};
+  const fl   = Array.isArray(floatData) && floatData.length ? floatData[0] : {};
+  const div0 = Array.isArray(dividends) && dividends.length ? dividends[0] : {};
+
+  const curPrice = pick(quote.price, profile.price);
+  const mcap     = pick(profile.mktCap, profile.marketCap, quote.marketCap);
+  const eps      = pick(quote.eps, ic.epsDiluted, ic.epsdiluted, ic.eps);
+  const shares   = pick(profile.sharesOutstanding, quote.sharesOutstanding,
+                        fl.outstandingShares, ic.weightedAverageShsOutDil, ic.weightedAverageShsOut,
+                        mcap != null && curPrice ? mcap / curPrice : null);
+  const lastDiv  = pick(profile.lastDiv, profile.lastDividend);
 
   // -- Valuation --
-  setText('kpiPE',        fmtRatio(quote.pe || m.peRatioTTM));
-  setText('kpiForwardPE', fmtRatio(m.forwardPE || r.forwardPE || (curPrice && quote.eps ? curPrice / parseFloat(quote.eps) : null)));
-  setText('kpiPEG',       fmtRatio(m.pegRatioTTM || r.priceEarningsToGrowthRatioTTM));
-  setText('kpiPB',        fmtRatio(m.pbRatioTTM || r.priceToBookRatioTTM));
-  setText('kpiPS',        fmtRatio(m.priceToSalesRatioTTM || r.priceToSalesRatioTTM));
-  setText('kpiEVEBITDA',  fmtRatio(m.evToEbitdaTTM || m.enterpriseValueOverEBITDATTM || r.enterpriseValueMultipleTTM));
-  setText('kpiEV',        fmtCurrency(m.enterpriseValueTTM));
-  setText('kpiBookValue', fmtPrice(m.bookValuePerShareTTM));
+  const pe = pick(quote.pe, r.priceToEarningsRatioTTM, m.peRatioTTM,
+                  curPrice != null && eps ? curPrice / eps : null);
+  setText('kpiPE',        fmtRatio(pe));
+  setText('kpiForwardPE', fmtRatio(pick(m.forwardPE, curPrice != null && eps ? curPrice / eps : null)));
+  setText('kpiPEG',       fmtRatio(pick(r.priceToEarningsGrowthRatioTTM, m.pegRatioTTM, r.priceEarningsToGrowthRatioTTM)));
+  setText('kpiPB',        fmtRatio(pick(r.priceToBookRatioTTM, m.pbRatioTTM)));
+  setText('kpiPS',        fmtRatio(pick(r.priceToSalesRatioTTM, m.priceToSalesRatioTTM)));
+  setText('kpiEVEBITDA',  fmtRatio(pick(m.evToEBITDATTM, m.evToEbitdaTTM, r.enterpriseValueMultipleTTM)));
+
+  const ev = pick(m.enterpriseValueTTM,
+                  mcap != null ? mcap + (pick(b.totalDebt) ?? 0) - (pick(b.cashAndCashEquivalents) ?? 0) : null);
+  setText('kpiEV',        fmtCurrency(ev));
+  setText('kpiBookValue', fmtPrice(pick(m.bookValuePerShareTTM,
+                                        b.totalStockholdersEquity && shares ? b.totalStockholdersEquity / shares : null)));
 
   // -- Profitability --
-  const setMargin = (id, val, isDecimal=true) => {
+  const setMargin = (id, val) => {
     const n = parseFloat(val);
     if (val == null || isNaN(n)) { setText(id, 'N/A'); return; }
-    const pct = isDecimal ? n * 100 : n;
+    const pct = n * 100;
     setColored(id, pct.toFixed(2) + '%', pct > 0);
   };
 
-  setMargin('kpiGrossMargin',  m.grossProfitMarginTTM     || r.grossProfitMarginTTM);
-  setMargin('kpiOpMargin',     m.operatingProfitMarginTTM || r.operatingProfitMarginTTM);
-  setMargin('kpiNetMargin',    m.netProfitMarginTTM       || r.netProfitMarginTTM);
+  setMargin('kpiGrossMargin', pick(r.grossProfitMarginTTM, m.grossProfitMarginTTM));
+  setMargin('kpiOpMargin',    pick(r.operatingProfitMarginTTM, m.operatingProfitMarginTTM));
+  setMargin('kpiNetMargin',   pick(r.netProfitMarginTTM, m.netProfitMarginTTM));
 
   setText('kpiEBITDA', fmtCurrency(ic.ebitda));
-  if (ic.ebitda && ic.revenue && parseFloat(ic.revenue) !== 0) {
-    const ebMargin = (parseFloat(ic.ebitda) / parseFloat(ic.revenue)) * 100;
-    setColored('kpiEBITDAMargin', ebMargin.toFixed(2) + '%', ebMargin > 0);
-  } else {
-    setText('kpiEBITDAMargin', 'N/A');
-  }
+  const ebMarginDec = pick(ic.ebitda && ic.revenue && parseFloat(ic.revenue) !== 0
+                             ? parseFloat(ic.ebitda) / parseFloat(ic.revenue) : null,
+                           r.ebitdaMarginTTM);
+  setMargin('kpiEBITDAMargin', ebMarginDec);
 
-  setMargin('kpiROE',  m.roeTTM  || r.returnOnEquityTTM);
-  setMargin('kpiROA',  m.roaTTM  || r.returnOnAssetsTTM);
-  setMargin('kpiROIC', m.roicTTM || r.returnOnCapitalEmployedTTM);
+  setMargin('kpiROE',  pick(r.returnOnEquityTTM, m.returnOnEquityTTM, m.roeTTM));
+  setMargin('kpiROA',  pick(r.returnOnAssetsTTM, m.returnOnAssetsTTM, m.roaTTM));
+  setMargin('kpiROIC', pick(m.returnOnInvestedCapitalTTM, m.roicTTM, r.returnOnCapitalEmployedTTM));
 
   // -- Financial Health --
   setText('kpiRevenue', fmtCurrency(ic.revenue));
@@ -217,17 +265,17 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
   if (!isNaN(ni)) setColored('kpiNetIncome', fmtCurrency(ic.netIncome), ni > 0);
   else setText('kpiNetIncome', 'N/A');
 
-  setText('kpiTotalCash', fmtCurrency(b.cashAndCashEquivalents || b.cashAndShortTermInvestments));
-  setText('kpiTotalDebt', fmtCurrency(b.totalDebt || b.longTermDebt));
+  setText('kpiTotalCash', fmtCurrency(pick(b.cashAndCashEquivalents, b.cashAndShortTermInvestments)));
+  setText('kpiTotalDebt', fmtCurrency(pick(b.totalDebt, b.longTermDebt)));
 
-  const de = parseFloat(m.debtToEquityTTM || r.debtEquityRatioTTM);
-  setText('kpiDebtEquity', isNaN(de) ? 'N/A' : de.toFixed(2) + 'x');
+  const de = pick(r.debtToEquityRatioTTM, r.debtEquityRatioTTM, m.debtToEquityTTM);
+  setText('kpiDebtEquity', de == null ? 'N/A' : de.toFixed(2) + 'x');
 
-  setText('kpiCurrentRatio', fmtRatio(m.currentRatioTTM || r.currentRatioTTM));
-  setText('kpiQuickRatio',   fmtRatio(m.quickRatioTTM   || r.quickRatioTTM));
+  setText('kpiCurrentRatio', fmtRatio(pick(r.currentRatioTTM, m.currentRatioTTM)));
+  setText('kpiQuickRatio',   fmtRatio(pick(r.quickRatioTTM, m.quickRatioTTM)));
 
-  const fcf = parseFloat(cf.freeCashFlow || cf.operatingCashFlow);
-  if (!isNaN(fcf)) setColored('kpiFCF', fmtCurrency(fcf), fcf > 0);
+  const fcf = pick(cf.freeCashFlow, cf.operatingCashFlow, cf.netCashProvidedByOperatingActivities);
+  if (fcf != null) setColored('kpiFCF', fmtCurrency(fcf), fcf > 0);
   else setText('kpiFCF', 'N/A');
 
   // -- Growth & Dividends --
@@ -242,43 +290,44 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
     setColored('kpiEarningsGrowth', (niG >= 0 ? '+' : '') + (niG * 100).toFixed(2) + '%', niG > 0);
   } else setText('kpiEarningsGrowth', 'N/A');
 
-  setText('kpiEPS',        fmtPrice(quote.eps || ic.epsdiluted));
-  setText('kpiForwardEPS', fmtPrice(ic.epsdiluted));
+  setText('kpiEPS',        fmtPrice(eps));
+  setText('kpiForwardEPS', fmtPrice(pick(ic.epsDiluted, ic.epsdiluted, eps)));
 
-  const divYield = profile.lastDiv > 0 && profile.price > 0
-    ? ((profile.lastDiv / profile.price) * 100) : null;
-  setText('kpiDivYield',    divYield != null ? fmtPctDirect(divYield) : 'N/A');
-  setText('kpiDivRate',     profile.lastDiv > 0 ? fmtPrice(profile.lastDiv) : 'N/A');
+  const divYield = lastDiv > 0 && curPrice > 0 ? (lastDiv / curPrice) * 100 : null;
+  setText('kpiDivYield',   divYield != null ? fmtPctDirect(divYield)
+                            : (r.dividendYieldTTM != null ? fmtPctDecimal(r.dividendYieldTTM) : 'N/A'));
+  setText('kpiDivRate',    lastDiv > 0 ? fmtPrice(lastDiv) : 'N/A');
 
-  const payout = parseFloat(r.payoutRatioTTM || m.payoutRatioTTM);
-  setText('kpiPayoutRatio', isNaN(payout) ? 'N/A' : fmtPctDecimal(payout));
-  setText('kpiExDivDate',   fmtDate(quote.exDividendDate || profile.exDividendDate));
+  const payout = pick(r.dividendPayoutRatioTTM, r.payoutRatioTTM, m.payoutRatioTTM);
+  setText('kpiPayoutRatio', payout == null ? 'N/A' : fmtPctDecimal(payout));
+  setText('kpiExDivDate',   fmtDate(div0.date || quote.exDividendDate || profile.exDividendDate));
 
   // -- Market Data --
   setText('kpi52High',    fmtPrice(quote.yearHigh));
   setText('kpi52Low',     fmtPrice(quote.yearLow));
   setText('kpi50MA',      fmtPrice(quote.priceAvg50));
   setText('kpi200MA',     fmtPrice(quote.priceAvg200));
-  setText('kpiVolume',    fmtBig(quote.volume));
-  setText('kpiAvgVolume', fmtBig(quote.avgVolume));
-  setText('kpiShares',    fmtBig(profile.sharesOutstanding || quote.sharesOutstanding));
-  setText('kpiFloat',     fmtBig(profile.floatShares || quote.floatShares));
+  setText('kpiVolume',    fmtBig(pick(quote.volume, profile.volume)));
+  setText('kpiAvgVolume', fmtBig(pick(quote.avgVolume, quote.averageVolume, profile.volAvg, profile.averageVolume)));
+  setText('kpiShares',    fmtBig(shares));
+  setText('kpiFloat',     fmtBig(pick(fl.floatShares, profile.floatShares, quote.floatShares)));
 
   // -- Analyst Consensus --
-  const latestRec = Array.isArray(recs) && recs.length ? recs[0] : null;
-  if (latestRec) {
-    // FMP has used both naming schemes on this endpoint at different times
-    const sb    = latestRec.analystRatingsStrongBuy  ?? latestRec.strongBuy  ?? 0;
-    const b2    = latestRec.analystRatingsBuy        ?? latestRec.buy        ?? 0;
-    const h     = latestRec.analystRatingsHold       ?? latestRec.hold       ?? 0;
-    const s     = latestRec.analystRatingsSell       ?? latestRec.sell       ?? 0;
-    const ss    = latestRec.analystRatingsStrongSell ?? latestRec.strongSell ?? 0;
-    const total = sb + b2 + h + s + ss;
-    const buyPct = total ? (sb + b2) / total : 0;
+  const latestRec = Array.isArray(recs) ? (recs.length ? recs[0] : null) : recs;
+  const sb  = pick(latestRec?.strongBuy,  latestRec?.analystRatingsStrongBuy)  ?? 0;
+  const b2  = pick(latestRec?.buy,        latestRec?.analystRatingsBuy)        ?? 0;
+  const h   = pick(latestRec?.hold,       latestRec?.analystRatingsHold)       ?? 0;
+  const s   = pick(latestRec?.sell,       latestRec?.analystRatingsSell)       ?? 0;
+  const ss  = pick(latestRec?.strongSell, latestRec?.analystRatingsStrongSell) ?? 0;
+  const total = sb + b2 + h + s + ss;
 
-    let rec = 'Hold';
-    if (buyPct > 0.6) rec = buyPct > 0.8 ? 'Strong Buy' : 'Buy';
-    if (total && (s + ss) / total > 0.4) rec = 'Sell';
+  if (latestRec && total > 0) {
+    const buyPct = (sb + b2) / total;
+    let rec = latestRec.consensus || 'Hold';
+    if (!latestRec.consensus) {
+      if (buyPct > 0.6) rec = buyPct > 0.8 ? 'Strong Buy' : 'Buy';
+      if ((s + ss) / total > 0.4) rec = 'Sell';
+    }
 
     const recEl = document.getElementById('kpiRecommendation');
     if (recEl) {
@@ -293,13 +342,13 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
     setText('kpiAnalystCount',   'N/A');
   }
 
-  if (targets && targets.length) {
-    const t = targets[0];
-    const mean   = parseFloat(t.targetConsensus || t.targetMedian);
-    const upside = curPrice ? (mean - curPrice) / curPrice : null;
+  const t0 = Array.isArray(targets) ? (targets.length ? targets[0] : null) : targets;
+  if (t0 && (t0.targetConsensus != null || t0.targetMedian != null)) {
+    const mean   = pick(t0.targetConsensus, t0.targetMedian);
+    const upside = curPrice && mean != null ? (mean - curPrice) / curPrice : null;
     setText('kpiTargetPrice', fmtPrice(mean));
-    setText('kpiTargetHigh',  fmtPrice(t.targetHigh));
-    setText('kpiTargetLow',   fmtPrice(t.targetLow));
+    setText('kpiTargetHigh',  fmtPrice(t0.targetHigh));
+    setText('kpiTargetLow',   fmtPrice(t0.targetLow));
     if (upside != null) setColored('kpiUpside', (upside >= 0 ? '+' : '') + (upside * 100).toFixed(2) + '%', upside > 0);
     else setText('kpiUpside', 'N/A');
   } else {
@@ -315,15 +364,19 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, balance, inc
 // ============================================================
 
 function renderChart(historical) {
-  const raw = historical?.historical;
+  // stable API returns a bare array; legacy v3 wrapped it in {historical}
+  const raw = Array.isArray(historical) ? historical : historical?.historical;
   if (!Array.isArray(raw) || !raw.length) return;
 
-  const sorted = [...raw].reverse();
+  const sorted = [...raw].sort((a, b) => new Date(a.date) - new Date(b.date));
   const labels = sorted.map(d => {
     const dt = new Date(d.date);
     return dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   });
-  const prices = sorted.map(d => d.close != null ? +parseFloat(d.close).toFixed(2) : null);
+  const prices = sorted.map(d => {
+    const v = d.close ?? d.price;
+    return v != null ? +parseFloat(v).toFixed(2) : null;
+  });
 
   if (priceChart) { priceChart.destroy(); priceChart = null; }
 
@@ -400,16 +453,19 @@ async function loadChart(ticker, range) {
 // Render: Financial Statements
 // ============================================================
 
+// f.key may be a single field name or an array of candidates
+// (stable and legacy statements use different names for a few rows)
 function buildFinTable(fields, reports) {
   if (!reports?.length) {
     return '<p style="padding:20px;color:var(--text-muted)">No annual data available for this ticker.</p>';
   }
   const years = reports.slice(0, 4).reverse();
-  const head  = years.map(r => `<th>${(r.date || r.calendarYear || '').slice(0, 4)}</th>`).join('');
+  const head  = years.map(r => `<th>${String(r.date || r.calendarYear || r.fiscalYear || '').slice(0, 4)}</th>`).join('');
   const rows  = fields.map(f => {
+    const keys  = Array.isArray(f.key) ? f.key : [f.key];
     const cells = years.map(r => {
-      const v = r[f.key];
-      if (v == null || v === '') return '<td class="fin-value">N/A</td>';
+      const v = keys.map(k => r[k]).find(x => x != null && x !== '');
+      if (v == null) return '<td class="fin-value">N/A</td>';
       const n = parseFloat(v);
       const cls = f.colored ? (n > 0 ? ' positive' : n < 0 ? ' negative' : '') : '';
       return `<td class="fin-value${cls}">${fmtCurrency(v)}</td>`;
@@ -441,11 +497,11 @@ const BALANCE_FIELDS = [
   { key: 'totalStockholdersEquity',    label: "Stockholders' Equity", colored: true },
 ];
 const CASHFLOW_FIELDS = [
-  { key: 'operatingCashFlow',          label: 'Operating Cash Flow', colored: true },
+  { key: ['operatingCashFlow', 'netCashProvidedByOperatingActivities'], label: 'Operating Cash Flow', colored: true },
   { key: 'capitalExpenditure',         label: 'Capital Expenditures' },
   { key: 'freeCashFlow',               label: 'Free Cash Flow',      colored: true },
-  { key: 'dividendsPaid',              label: 'Dividends Paid' },
-  { key: 'netCashUsedForInvestingActivites', label: 'Investing Activities' },
+  { key: ['dividendsPaid', 'netDividendsPaid', 'commonDividendsPaid'], label: 'Dividends Paid' },
+  { key: ['netCashUsedForInvestingActivites', 'netCashProvidedByInvestingActivities'], label: 'Investing Activities' },
 ];
 
 async function loadAndRenderTab(fetchFn, fields) {
@@ -523,22 +579,25 @@ async function searchStock(ticker) {
   document.querySelectorAll('.fin-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
 
   try {
-    // profile and quote errors propagate — bad API key surfaces here instead of silently becoming empty
-    const [profileArr, quoteArr, metricsArr, ratiosArr, recsArr, targetsArr, incomeArr, balanceArr, cashflowArr, histData] = await Promise.all([
+    // profile and quote errors propagate — a bad key or plan issue surfaces
+    // with FMP's real message instead of silently becoming empty data
+    const [profileArr, quoteArr, metricsArr, ratiosArr, recsArr, targetsArr, floatArr, divArr, incomeArr, balanceArr, cashflowArr, histData] = await Promise.all([
       fmpProfile(ticker),
       fmpQuote(ticker),
-      fmpMetrics(ticker).catch(() => [{}]),
-      fmpRatios(ticker).catch(() => [{}]),
+      fmpMetrics(ticker).catch(() => []),
+      fmpRatios(ticker).catch(() => []),
       fmpRecs(ticker).catch(() => []),
       fmpTargets(ticker).catch(() => []),
+      fmpFloat(ticker).catch(() => []),
+      fmpDividends(ticker).catch(() => []),
       fmpIncome(ticker).catch(() => []),
       fmpBalance(ticker).catch(() => []),
       fmpCashflow(ticker).catch(() => []),
-      fmpHistory(ticker, 365).catch(() => ({})),
+      fmpHistory(ticker, 365).catch(() => []),
     ]);
 
-    const profile = Array.isArray(profileArr) && profileArr.length ? profileArr[0] : null;
-    const quote   = Array.isArray(quoteArr)   && quoteArr.length   ? quoteArr[0]   : null;
+    const profile = Array.isArray(profileArr) ? (profileArr[0] || null) : profileArr;
+    const quote   = Array.isArray(quoteArr)   ? (quoteArr[0]   || null) : quoteArr;
 
     if (!profile?.companyName && !quote?.symbol) {
       throw new Error(`"${ticker}" not found. Please check the ticker symbol.`);
@@ -547,13 +606,16 @@ async function searchStock(ticker) {
     const p = profile || {};
     const q = quote   || {};
 
-    fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsArr, targets: targetsArr, income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
+    fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsArr,
+                 targets: targetsArr, floatData: floatArr, dividends: divArr,
+                 income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
 
     renderHeader(p, q, ticker);
-    renderQuickStats(p, q, metricsArr, incomeArr, cashflowArr);
-    renderKPIs(p, q, metricsArr, ratiosArr, recsArr, targetsArr, balanceArr, incomeArr, cashflowArr);
+    renderQuickStats(p, q, metricsArr, ratiosArr, incomeArr, cashflowArr);
+    renderKPIs(p, q, metricsArr, ratiosArr, recsArr, targetsArr, floatArr, divArr, balanceArr, incomeArr, cashflowArr);
 
-    if (Array.isArray(histData?.historical) && histData.historical.length) {
+    const histArr = Array.isArray(histData) ? histData : histData?.historical;
+    if (Array.isArray(histArr) && histArr.length) {
       try {
         renderChart(histData);
         show('chartSection');
@@ -563,11 +625,9 @@ async function searchStock(ticker) {
     }
 
     show('financials');
-    document.getElementById('finContent').innerHTML =
-      '<p style="padding:20px;color:var(--text-muted)">Loading...</p>';
-    try {
-      await loadAndRenderTab(fmpIncome, INCOME_FIELDS);
-    } catch (_) {
+    if (Array.isArray(incomeArr) && incomeArr.length) {
+      document.getElementById('finContent').innerHTML = buildFinTable(INCOME_FIELDS, incomeArr);
+    } else {
       document.getElementById('finContent').innerHTML =
         '<p style="padding:20px;color:var(--text-muted)">Financial statements unavailable for this ticker.</p>';
     }
@@ -618,6 +678,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // API Key
   const keyInput = document.getElementById('apiKeyInput');
   if (keyInput && apiKey) keyInput.value = apiKey;
   updateApiKeyStatus();
@@ -630,6 +691,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateApiKeyStatus();
   });
 
+  // Watchlist
   document.getElementById('watchlistBtn').addEventListener('click', () => {
     if (currentTicker) toggleWatchlist(currentTicker);
   });
@@ -639,8 +701,10 @@ document.addEventListener('DOMContentLoaded', () => {
     renderWatchlistGrid();
   });
 
+  // Error close
   document.getElementById('closeError').addEventListener('click', () => hide('errorBanner'));
 
+  // Timeframe
   document.querySelectorAll('.tf-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       document.querySelectorAll('.tf-btn').forEach(b => b.classList.remove('active'));
@@ -649,6 +713,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Financial tabs
   document.querySelectorAll('.fin-tab').forEach(tab => {
     tab.addEventListener('click', async () => {
       document.querySelectorAll('.fin-tab').forEach(t => t.classList.remove('active'));
@@ -668,14 +733,17 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // Navbar scroll
   window.addEventListener('scroll', () => {
     document.getElementById('navbar').classList.toggle('scrolled', window.scrollY > 50);
   }, { passive: true });
 
+  // Hamburger
   document.getElementById('hamburger').addEventListener('click', () => {
     document.getElementById('navLinks').classList.toggle('open');
   });
 
+  // Theme toggle
   document.getElementById('themeToggle').addEventListener('click', () => {
     const html    = document.documentElement;
     const isLight = html.dataset.theme === 'light';
@@ -685,6 +753,7 @@ document.addEventListener('DOMContentLoaded', () => {
     localStorage.setItem('finmetrics_theme', html.dataset.theme);
   });
 
+  // Restore saved theme
   const savedTheme = localStorage.getItem('finmetrics_theme');
   if (savedTheme) {
     document.documentElement.dataset.theme = savedTheme;
