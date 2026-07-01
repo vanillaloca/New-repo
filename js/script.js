@@ -7,6 +7,14 @@
 // ============================================================
 const FMP_BASE = 'https://financialmodelingprep.com';
 
+// Yahoo Finance fallback: Yahoo sends no CORS headers, so browser requests
+// must route through public CORS proxies. Tried in order until one works.
+const YH_PROXIES = [
+  u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+  u => 'https://corsproxy.io/?url=' + encodeURIComponent(u),
+  u => u,
+];
+
 let currentTicker = '';
 let fullData      = null;
 let priceChart    = null;
@@ -59,6 +67,68 @@ const fmpHistory   = (t, days) => {
   const from = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
   return fmpFetch('/stable/historical-price-eod/light', { symbol: t, from });
 };
+
+// ============================================================
+// Yahoo Finance fallback (unofficial, via CORS proxies)
+// Fills analyst data and international tickers that FMP's
+// free plan doesn't include. Best-effort: failures are silent.
+// ============================================================
+
+async function yahooFetch(yahooUrl) {
+  let lastErr = null;
+  for (const wrap of YH_PROXIES) {
+    try {
+      const res = await fetch(wrap(yahooUrl));
+      if (!res.ok) { lastErr = new Error('HTTP ' + res.status); continue; }
+      return await res.json();
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr || new Error('Yahoo fallback unreachable');
+}
+
+// Yahoo wraps numbers as {raw, fmt} in some responses
+const yraw = v => (v && typeof v === 'object' && 'raw' in v) ? v.raw : v;
+
+async function yahooAnalyst(t) {
+  const out = { recs: null, targets: null, shortRatio: null };
+  try {
+    const d = await yahooFetch(
+      `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(t)}?modules=financialData%2CrecommendationTrend%2CdefaultKeyStatistics`);
+    const q   = d?.quoteSummary?.result?.[0];
+    const fin = q?.financialData;
+    if (fin && yraw(fin.targetMeanPrice) != null) {
+      out.targets = [{ targetHigh: yraw(fin.targetHighPrice), targetLow: yraw(fin.targetLowPrice),
+                       targetConsensus: yraw(fin.targetMeanPrice), targetMedian: yraw(fin.targetMedianPrice) }];
+    }
+    const tr = q?.recommendationTrend?.trend?.find(x => x.period === '0m') || q?.recommendationTrend?.trend?.[0];
+    if (tr) out.recs = [{ strongBuy: yraw(tr.strongBuy), buy: yraw(tr.buy), hold: yraw(tr.hold),
+                          sell: yraw(tr.sell), strongSell: yraw(tr.strongSell) }];
+    out.shortRatio = yraw(q?.defaultKeyStatistics?.shortRatio) ?? null;
+  } catch (e) {
+    // quoteSummary is sometimes crumb-gated — insights endpoint at least has a target price
+    try {
+      const d = await yahooFetch(`https://query1.finance.yahoo.com/ws/insights/v2/finance/insights?symbol=${encodeURIComponent(t)}`);
+      const rec = d?.finance?.result?.instrumentInfo?.recommendation;
+      if (rec?.targetPrice != null) out.targets = [{ targetConsensus: rec.targetPrice }];
+    } catch (_) {}
+  }
+  return out;
+}
+
+async function yahooChart(t, days) {
+  const range    = days <= 5 ? '5d' : days <= 30 ? '1mo' : days <= 90 ? '3mo'
+                 : days <= 180 ? '6mo' : days <= 365 ? '1y' : '5y';
+  const interval = days <= 5 ? '30m' : days <= 365 ? '1d' : '1wk';
+  const d = await yahooFetch(
+    `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(t)}?range=${range}&interval=${interval}`);
+  const r = d?.chart?.result?.[0];
+  if (!r) throw new Error('No Yahoo chart data');
+  const closes = r.indicators?.quote?.[0]?.close || [];
+  const hist = (r.timestamp || [])
+    .map((ts, i) => ({ date: new Date(ts * 1000).toISOString().slice(0, 10), price: closes[i] }))
+    .filter(x => x.price != null);
+  return { meta: r.meta || {}, hist };
+}
 
 // ============================================================
 // Formatters
@@ -204,7 +274,7 @@ function renderQuickStats(profile, quote, metrics, ratios, income, cashflow) {
 // Render: KPI Cards
 // ============================================================
 
-function renderKPIs(profile, quote, metrics, ratios, recs, targets, floatData, dividends, balance, income, cashflow) {
+function renderKPIs(profile, quote, metrics, ratios, recs, targets, floatData, dividends, balance, income, cashflow, shortRatio) {
   const m    = Array.isArray(metrics)   && metrics.length   ? metrics[0]   : {};
   const r    = Array.isArray(ratios)    && ratios.length    ? ratios[0]    : {};
   const b    = Array.isArray(balance)   && balance.length   ? balance[0]   : {};
@@ -355,7 +425,8 @@ function renderKPIs(profile, quote, metrics, ratios, recs, targets, floatData, d
     ['kpiTargetPrice', 'kpiTargetHigh', 'kpiTargetLow', 'kpiUpside'].forEach(id => setText(id, 'N/A'));
   }
 
-  setText('kpiShortRatio', 'N/A');
+  const sr = parseFloat(shortRatio);
+  setText('kpiShortRatio', (shortRatio != null && !isNaN(sr)) ? sr.toFixed(2) : 'N/A');
   show('kpis');
 }
 
@@ -443,9 +514,16 @@ async function loadChart(ticker, range) {
   const days = TF_DAYS[range] || 365;
   try {
     const hist = await fmpHistory(ticker, days);
-    renderChart(hist);
+    const arr = Array.isArray(hist) ? hist : hist?.historical;
+    if (Array.isArray(arr) && arr.length) { renderChart(arr); return; }
+    throw new Error('no FMP history');
   } catch (e) {
-    console.warn('Chart error:', e.message);
+    try {
+      const y = await yahooChart(ticker, days);
+      if (y.hist.length) renderChart(y.hist);
+    } catch (e2) {
+      console.warn('Chart error:', e2.message);
+    }
   }
 }
 
@@ -579,11 +657,12 @@ async function searchStock(ticker) {
   document.querySelectorAll('.fin-tab').forEach((t, i) => t.classList.toggle('active', i === 0));
 
   try {
-    // profile and quote errors propagate — a bad key or plan issue surfaces
-    // with FMP's real message instead of silently becoming empty data
+    // FMP is primary; remember its core error so we can surface it if the
+    // Yahoo rescue below also fails
+    let fmpCoreError = null;
     const [profileArr, quoteArr, metricsArr, ratiosArr, recsArr, targetsArr, floatArr, divArr, incomeArr, balanceArr, cashflowArr, histData] = await Promise.all([
-      fmpProfile(ticker),
-      fmpQuote(ticker),
+      fmpProfile(ticker).catch(err => { fmpCoreError = err; return []; }),
+      fmpQuote(ticker).catch(err => { fmpCoreError = fmpCoreError || err; return []; }),
       fmpMetrics(ticker).catch(() => []),
       fmpRatios(ticker).catch(() => []),
       fmpRecs(ticker).catch(() => []),
@@ -596,28 +675,65 @@ async function searchStock(ticker) {
       fmpHistory(ticker, 365).catch(() => []),
     ]);
 
-    const profile = Array.isArray(profileArr) ? (profileArr[0] || null) : profileArr;
-    const quote   = Array.isArray(quoteArr)   ? (quoteArr[0]   || null) : quoteArr;
+    let profile = Array.isArray(profileArr) ? (profileArr[0] || null) : profileArr;
+    let quote   = Array.isArray(quoteArr)   ? (quoteArr[0]   || null) : quoteArr;
+    let histArr = Array.isArray(histData)   ? histData : histData?.historical;
+
+    // Yahoo rescue: international tickers FMP's free plan doesn't cover
+    if (!profile?.companyName && !quote?.symbol) {
+      try {
+        const y = await yahooChart(ticker, 365);
+        const m = y.meta;
+        if (m.regularMarketPrice != null) {
+          profile = {
+            companyName: m.longName || m.shortName || ticker,
+            exchange:    m.fullExchangeName || m.exchangeName || '',
+            currency:    m.currency || 'USD',
+          };
+          quote = { symbol: m.symbol || ticker, price: m.regularMarketPrice,
+                    yearHigh: m.fiftyTwoWeekHigh, yearLow: m.fiftyTwoWeekLow };
+          const prev = m.chartPreviousClose ?? m.previousClose;
+          if (prev) {
+            quote.change = m.regularMarketPrice - prev;
+            quote.changePercentage = ((m.regularMarketPrice - prev) / prev) * 100;
+          }
+          if (!Array.isArray(histArr) || !histArr.length) histArr = y.hist;
+        }
+      } catch (_) {}
+    }
 
     if (!profile?.companyName && !quote?.symbol) {
-      throw new Error(`"${ticker}" not found. Please check the ticker symbol.`);
+      throw fmpCoreError || new Error(`"${ticker}" not found. Please check the ticker symbol.`);
+    }
+
+    // Yahoo fallback: analyst ratings/targets are premium on FMP's free plan
+    let recsData = recsArr, targetsData = targetsArr, shortRatio = null;
+    const t0chk = Array.isArray(targetsData) && targetsData.length ? targetsData[0] : null;
+    const recsMissing    = !(Array.isArray(recsData) && recsData.length);
+    const targetsMissing = !t0chk || (t0chk.targetConsensus == null && t0chk.targetMedian == null);
+    if (recsMissing || targetsMissing) {
+      const y = await yahooAnalyst(ticker).catch(() => null);
+      if (y) {
+        if (y.recs && recsMissing)       recsData    = y.recs;
+        if (y.targets && targetsMissing) targetsData = y.targets;
+        shortRatio = y.shortRatio;
+      }
     }
 
     const p = profile || {};
     const q = quote   || {};
 
-    fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsArr,
-                 targets: targetsArr, floatData: floatArr, dividends: divArr,
+    fullData = { profile: p, quote: q, metrics: metricsArr, ratios: ratiosArr, recs: recsData,
+                 targets: targetsData, floatData: floatArr, dividends: divArr,
                  income: incomeArr, balance: balanceArr, cashflow: cashflowArr };
 
     renderHeader(p, q, ticker);
     renderQuickStats(p, q, metricsArr, ratiosArr, incomeArr, cashflowArr);
-    renderKPIs(p, q, metricsArr, ratiosArr, recsArr, targetsArr, floatArr, divArr, balanceArr, incomeArr, cashflowArr);
+    renderKPIs(p, q, metricsArr, ratiosArr, recsData, targetsData, floatArr, divArr, balanceArr, incomeArr, cashflowArr, shortRatio);
 
-    const histArr = Array.isArray(histData) ? histData : histData?.historical;
     if (Array.isArray(histArr) && histArr.length) {
       try {
-        renderChart(histData);
+        renderChart(histArr);
         show('chartSection');
       } catch (e) {
         console.warn('Chart render failed:', e.message);
